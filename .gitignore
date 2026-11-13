@@ -1,0 +1,16 @@
+.build/
+dist/
+.DS_Store
+.vscode/
+*.vmm/
+
+__pycache__/
+*.pyc
+
+# Local copies of historical documents; excluded from public source.
+.local-archive/
+
+# Local environment files can contain credentials.
+.env
+.env.*
+!.env.example

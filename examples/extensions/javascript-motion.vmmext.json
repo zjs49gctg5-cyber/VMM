@@ -1,0 +1,115 @@
+{
+  "animations" : [
+    {
+      "description" : "JavaScriptCoreで波形を生成します。",
+      "id" : "js.wave",
+      "name" : "JavaScript · 上下の波",
+      "parameters" : [
+        {
+          "defaultValue" : 0.08,
+          "id" : "amplitude",
+          "maximum" : 0.5,
+          "minimum" : 0,
+          "title" : "振幅",
+          "unit" : "%"
+        },
+        {
+          "defaultValue" : 2,
+          "id" : "cycles",
+          "maximum" : 10,
+          "minimum" : 0.25,
+          "title" : "繰り返し回数",
+          "unit" : "回"
+        }
+      ],
+      "script" : "function animate(input) {\n  const phase = input.t * Math.PI * 2 * input.params.cycles;\n  return { y: Math.sin(phase) * input.params.amplitude };\n}",
+      "scriptOutputs" : [
+        {
+          "offset" : true,
+          "property" : "y"
+        }
+      ],
+      "tracks" : [
+
+      ]
+    },
+    {
+      "description" : "幅と高さの比を補正して円形に周回します。",
+      "id" : "js.orbit",
+      "name" : "JavaScript · 周回",
+      "parameters" : [
+        {
+          "defaultValue" : 0.08,
+          "id" : "amplitude",
+          "maximum" : 0.5,
+          "minimum" : 0,
+          "title" : "振幅",
+          "unit" : "%"
+        },
+        {
+          "defaultValue" : 2,
+          "id" : "cycles",
+          "maximum" : 10,
+          "minimum" : 0.25,
+          "title" : "繰り返し回数",
+          "unit" : "回"
+        }
+      ],
+      "script" : "function animate(input) {\n  const phase = input.t * Math.PI * 2 * input.params.cycles;\n  const radius = input.params.amplitude;\n  return {\n    x: Math.cos(phase) * radius * input.height \/ input.width,\n    y: Math.sin(phase) * radius\n  };\n}",
+      "scriptOutputs" : [
+        {
+          "offset" : true,
+          "property" : "x"
+        },
+        {
+          "offset" : true,
+          "property" : "y"
+        }
+      ],
+      "tracks" : [
+
+      ]
+    },
+    {
+      "description" : "回転を揺らしながら元の角度に戻します。",
+      "id" : "js.vibration",
+      "name" : "JavaScript · 減衰振動",
+      "parameters" : [
+        {
+          "defaultValue" : 20,
+          "id" : "angle",
+          "maximum" : 180,
+          "minimum" : 0,
+          "title" : "角度",
+          "unit" : "°"
+        },
+        {
+          "defaultValue" : 2,
+          "id" : "cycles",
+          "maximum" : 10,
+          "minimum" : 0.25,
+          "title" : "繰り返し回数",
+          "unit" : "回"
+        }
+      ],
+      "script" : "function animate(input) {\n  const envelope = Math.pow(1 - input.t, 3);\n  return { rotation: Math.sin(input.t * Math.PI * 2 * input.params.cycles) * input.params.angle * envelope };\n}",
+      "scriptOutputs" : [
+        {
+          "offset" : true,
+          "property" : "rotation"
+        }
+      ],
+      "tracks" : [
+
+      ]
+    }
+  ],
+  "author" : "VMM",
+  "id" : "vmm.sample.javascript",
+  "name" : "JavaScriptモーション",
+  "presets" : [
+
+  ],
+  "revision" : "1.0",
+  "version" : 2
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "VMM動画編集"
+  short_description: "VMMのMCP接続で脚本・字幕・素材・動画出力を操作"
+  default_prompt: "Use $vmm-control to edit the requested video in VMM through its local MCP connection."

@@ -1,0 +1,244 @@
+{
+  "animations" : [
+    {
+      "description" : "振幅と繰り返し回数を調整できる波です。",
+      "id" : "wave",
+      "name" : "上下に揺れる",
+      "parameters" : [
+        {
+          "defaultValue" : 0.08,
+          "id" : "amplitude",
+          "maximum" : 0.5,
+          "minimum" : 0,
+          "title" : "振幅",
+          "unit" : "%"
+        },
+        {
+          "defaultValue" : 2,
+          "id" : "cycles",
+          "maximum" : 10,
+          "minimum" : 0.25,
+          "title" : "繰り返し回数",
+          "unit" : "回"
+        }
+      ],
+      "tracks" : [
+        {
+          "expression" : {
+            "args" : [
+              {
+                "op" : "parameter",
+                "parameter" : "amplitude"
+              },
+              {
+                "args" : [
+                  {
+                    "args" : [
+                      {
+                        "args" : [
+                          {
+                            "op" : "time"
+                          },
+                          {
+                            "op" : "parameter",
+                            "parameter" : "cycles"
+                          }
+                        ],
+                        "op" : "multiply"
+                      },
+                      {
+                        "op" : "constant",
+                        "value" : 6.283185307179586
+                      }
+                    ],
+                    "op" : "multiply"
+                  }
+                ],
+                "op" : "sin"
+              }
+            ],
+            "op" : "multiply"
+          },
+          "offset" : true,
+          "property" : "y"
+        }
+      ]
+    },
+    {
+      "description" : "アイテムの基準位置を中心に周回します。",
+      "id" : "orbit",
+      "name" : "周回運動",
+      "parameters" : [
+        {
+          "defaultValue" : 0.08,
+          "id" : "amplitude",
+          "maximum" : 0.5,
+          "minimum" : 0,
+          "title" : "振幅",
+          "unit" : "%"
+        },
+        {
+          "defaultValue" : 2,
+          "id" : "cycles",
+          "maximum" : 10,
+          "minimum" : 0.25,
+          "title" : "繰り返し回数",
+          "unit" : "回"
+        }
+      ],
+      "tracks" : [
+        {
+          "expression" : {
+            "args" : [
+              {
+                "op" : "parameter",
+                "parameter" : "amplitude"
+              },
+              {
+                "args" : [
+                  {
+                    "args" : [
+                      {
+                        "args" : [
+                          {
+                            "op" : "time"
+                          },
+                          {
+                            "op" : "parameter",
+                            "parameter" : "cycles"
+                          }
+                        ],
+                        "op" : "multiply"
+                      },
+                      {
+                        "op" : "constant",
+                        "value" : 6.283185307179586
+                      }
+                    ],
+                    "op" : "multiply"
+                  }
+                ],
+                "op" : "cos"
+              }
+            ],
+            "op" : "multiply"
+          },
+          "offset" : true,
+          "property" : "x"
+        },
+        {
+          "expression" : {
+            "args" : [
+              {
+                "op" : "parameter",
+                "parameter" : "amplitude"
+              },
+              {
+                "args" : [
+                  {
+                    "args" : [
+                      {
+                        "args" : [
+                          {
+                            "op" : "time"
+                          },
+                          {
+                            "op" : "parameter",
+                            "parameter" : "cycles"
+                          }
+                        ],
+                        "op" : "multiply"
+                      },
+                      {
+                        "op" : "constant",
+                        "value" : 6.283185307179586
+                      }
+                    ],
+                    "op" : "multiply"
+                  }
+                ],
+                "op" : "sin"
+              }
+            ],
+            "op" : "multiply"
+          },
+          "offset" : true,
+          "property" : "y"
+        }
+      ]
+    }
+  ],
+  "author" : "VMM",
+  "id" : "vmm.sample.motion",
+  "name" : "基本モーション",
+  "presets" : [
+    {
+      "animation" : {
+        "entrance" : {
+          "duration" : 0.5,
+          "easing" : "easeOut",
+          "kind" : "fade"
+        },
+        "exit" : {
+          "duration" : 0.5,
+          "easing" : "easeIn",
+          "kind" : "fade"
+        },
+        "motions" : [
+
+        ],
+        "tracks" : [
+
+        ]
+      },
+      "name" : "フェードイン・アウト",
+      "version" : 1
+    },
+    {
+      "animation" : {
+        "entrance" : {
+          "duration" : 0.5,
+          "easing" : "backOut",
+          "kind" : "zoom"
+        },
+        "exit" : {
+          "duration" : 0.5,
+          "easing" : "easeOut",
+          "kind" : "none"
+        },
+        "motions" : [
+
+        ],
+        "tracks" : [
+
+        ]
+      },
+      "name" : "ポン出し",
+      "version" : 1
+    },
+    {
+      "animation" : {
+        "entrance" : {
+          "duration" : 0.6,
+          "easing" : "easeOut",
+          "kind" : "slideLeft"
+        },
+        "exit" : {
+          "duration" : 0.5,
+          "easing" : "easeIn",
+          "kind" : "slideRight"
+        },
+        "motions" : [
+
+        ],
+        "tracks" : [
+
+        ]
+      },
+      "name" : "スライド登場・退場",
+      "version" : 1
+    }
+  ],
+  "revision" : "1.0",
+  "version" : 1
+}
