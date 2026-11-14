@@ -170,7 +170,8 @@ final class MCPTests:XCTestCase {
         XCTAssertEqual((try JSONSerialization.jsonObject(with:data) as? [String:Any])?["ok"] as? Bool,true)
         XCTAssertEqual(store.project.clips.first?.text,"MCPからのセリフ")
         let arguments=root.appendingPathComponent("karaoke.json")
-        try JSONSerialization.data(withJSONObject:["text":"[00:01.00]歌詞\n[00:03.00]","track":0]).write(to:arguments)
+        let taggedLyrics="@Ruby1=漢字,か[00:00:50]んじ\n[00:01:00]漢字[00:03:00]"
+        try JSONSerialization.data(withJSONObject:["text":taggedLyrics,"track":0]).write(to:arguments)
         let karaoke=try await Task.detached{()throws->Data in
             let process=Process();process.executableURL=URL(fileURLWithPath:"/usr/bin/python3")
             process.arguments=[script.path,"--helper",helper.path,"--connection",connection,"call","vmm_karaoke_import",arguments.path]
@@ -181,6 +182,22 @@ final class MCPTests:XCTestCase {
         }.value
         XCTAssertEqual((try JSONSerialization.jsonObject(with:karaoke) as? [String:Any])?["ok"] as? Bool,true)
         XCTAssertEqual(store.project.clips.last?.lyricWipe?.color,"FFDD33")
+        XCTAssertEqual(store.project.clips.last?.lyricWipe?.segments?.count,1)
+        XCTAssertEqual(store.project.clips.last?.lyricRuby?.first?.timings?.first?.offset,0.5)
+        let parts:[[String:Any]]=[["text":"[00:01:00]A[00:02:00]B[00:03:00]","track":0],["text":"[00:01:00]別パート[00:03:00]","track":1]]
+        try JSONSerialization.data(withJSONObject:["parts":parts]).write(to:arguments)
+        let multipart=try await Task.detached{()throws->Data in
+            let process=Process();process.executableURL=URL(fileURLWithPath:"/usr/bin/python3")
+            process.arguments=[script.path,"--helper",helper.path,"--connection",connection,"call","vmm_karaoke_importParts",arguments.path]
+            let out=Pipe(),err=Pipe();process.standardOutput=out;process.standardError=err
+            try process.run();let result=out.fileHandleForReading.readDataToEndOfFile();process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus,0,String(data:err.fileHandleForReading.readDataToEndOfFile(),encoding:.utf8) ?? "")
+            return result
+        }.value
+        XCTAssertEqual((try JSONSerialization.jsonObject(with:multipart) as? [String:Any])?["ok"] as? Bool,true)
+        let importedParts=Array(store.project.clips.suffix(2))
+        XCTAssertEqual(importedParts.map(\.track),[0,1])
+        XCTAssertEqual(try XCTUnwrap(importedParts.first).lyricWipe?.segments?.count,2)
         let activeFD=try await Task.detached{()throws->Int32 in
             let fd=try LocalSocket.connect(socket),lines=SocketLines(fd)
             try lines.write(JSONSerialization.data(withJSONObject:["token":descriptor.token]))
