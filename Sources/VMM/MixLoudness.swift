@@ -36,6 +36,7 @@ struct MixLoudnessControls:View {
         .onDisappear{task?.cancel()}
     }
     private func analyze() {
+        commitActiveFieldEditing()
         let project=store.project,directory=store.directory,options=store.settings
         failure=nil;result=nil
         task=Task {

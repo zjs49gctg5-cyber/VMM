@@ -314,7 +314,7 @@ struct ExportWorkspace:View {
             VMMChoice(text:L("カスタム"),value:"custom")
             VMMOptions(ExportTemplate.allCases,id:\.rawValue){VMMChoice(text:$0.title,value:$0.rawValue)}
         }
-        Button(L("プロジェクト設定に戻す")){store.settings.clearExportTemplate();store.persistSettings()}
+        Button(L("プロジェクト設定に戻す")){commitActiveFieldEditing();store.settings.clearExportTemplate();store.persistSettings()}
         Text(L("書き出し時だけサイズとFPSを変更します。縦横比を保ち、余白を黒で補います。")).foregroundColor(.secondary)
         VMMMenuPicker(L("書き出しサイズ"),selection:Binding(get:{if let w=store.settings.exportWidth,let h=store.settings.exportHeight{return "\(w)x\(h)"};return "project"},set:{value in
             store.settings.exportTemplate=nil
@@ -341,7 +341,7 @@ struct ExportWorkspace:View {
 
         NumberInput(title:"開始",value:binding(\.rangeStart),range:0...max(0,store.project.duration),unit:"秒")
         NumberInput(title:"終了（0なら末尾）",value:binding(\.rangeEnd),range:0...max(0,store.project.duration),unit:"秒")
-        HStack{Button(L("イン／アウト範囲")){if let r=store.project.timelineRange{store.settings.rangeStart=r.start;store.settings.rangeEnd=min(r.end,store.project.duration);store.persistSettings()}}.disabled(store.project.timelineRange==nil);Button(L("全体")){store.settings.rangeStart=0;store.settings.rangeEnd=0;store.persistSettings()};Button(L("選択アイテムの範囲")){if let c=store.selected{store.settings.rangeStart=c.start;store.settings.rangeEnd=c.end;store.persistSettings()}}}
+        HStack{Button(L("イン／アウト範囲")){commitActiveFieldEditing();if let r=store.project.timelineRange{store.settings.rangeStart=r.start;store.settings.rangeEnd=min(r.end,store.project.duration);store.persistSettings()}}.disabled(store.project.timelineRange==nil);Button(L("全体")){commitActiveFieldEditing();store.settings.rangeStart=0;store.settings.rangeEnd=0;store.persistSettings()};Button(L("選択アイテムの範囲")){commitActiveFieldEditing();if let c=store.selected{store.settings.rangeStart=c.start;store.settings.rangeEnd=c.end;store.persistSettings()}}}
         ExportReportView(store:store)
         ExportActionsView(store:store,queue:store.exportQueue)
         Divider();ExportQueueView(queue:store.exportQueue)
