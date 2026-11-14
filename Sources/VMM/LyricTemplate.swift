@@ -35,8 +35,18 @@ enum LyricTemplatePlanner {
         guard fps>0,lines.indices.contains(index),time.isFinite,time>=0,time<=86400 else{throw VMMError.message("歌詞の時刻が不正です。")}
         let frame=1/Double(fps),value=(time*Double(fps)).rounded()/Double(fps)
         guard value<=86400-frame,index==0 || value>=lines[index-1].start+frame else{throw VMMError.message("前の行より後の時刻を記録してください。")}
-        if index>0 {lines[index-1].end=value}
-        lines[index].start=value;lines[index].end=max(lines[index].end,value+frame)
+        var candidate=lines
+        if index>0 {
+            let previous=candidate[index-1]
+            guard previous.segments?.allSatisfy({$0.end<=value-previous.start+0.0001}) ?? true else {
+                throw VMMError.message("前の行の文字タイミングが終了するより後を記録してください。")
+            }
+            candidate[index-1].end=value
+        }
+        let required=candidate[index].segments?.map(\.end).max() ?? 0
+        candidate[index].start=value;candidate[index].end=max(candidate[index].end,value+max(frame,required))
+        guard candidate[index].end<=86400 else{throw VMMError.message("歌詞の時刻が不正です。")}
+        lines=candidate
     }
     static func previewSize(width:Int,height:Int)->CGSize {
         let factor=640/Double(max(1,width,height))

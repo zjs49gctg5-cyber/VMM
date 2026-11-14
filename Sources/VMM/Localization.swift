@@ -19,6 +19,7 @@ enum VMMLocalization {
 "候補を反映":"Apply candidates",
 "同期候補が隣接する行の時刻と重なります。行を手動で調整してから反映してください。":"A suggested time overlaps an adjacent line. Adjust the lines manually before applying it.",
 "歌詞が変更されました。同期候補を作り直してください。":"The lyrics have changed. Create new suggestions.",
+"前の行の文字タイミングが終了するより後を記録してください。":"Record a time after the previous line's character timings end.",
 "歌詞を等間隔に仮配置":"Place lyrics at even intervals",
 "仮配置は音声に同期しません。再配置すると調整済みの行は置き換わります。":"The initial placement is not synchronized to audio. Replacing it discards timing edits.",
 "行の候補":"lines suggested",

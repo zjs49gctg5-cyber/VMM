@@ -2,6 +2,15 @@ import XCTest
 @testable import VMM
 
 final class LyricTimingTests:XCTestCase {
+    func testRecordingPreservesImportedCharacterTiming()throws {
+        var lines=try LyricLRC.parse("[00:01.000]あ[00:02.000]い[00:03.000]\n[00:03.000]う[00:04.000]え[00:05.000]",fps:30)
+        let original=lines
+        XCTAssertThrowsError(try LyricTemplatePlanner.record(&lines,index:1,time:2,fps:30))
+        XCTAssertEqual(lines,original)
+        try LyricTemplatePlanner.record(&lines,index:0,time:2,fps:30)
+        XCTAssertEqual(lines[0].end,4,accuracy:0.0001)
+        XCTAssertEqual(lines[0].segments,original[0].segments)
+    }
     func testShiftIsFrameAlignedAndRejectsNegativeTimes()throws {
         let lines=try LyricTemplatePlanner.distribute("一\n二",start:1,interval:2,fps:30)
         let shifted=try LyricTemplatePlanner.shifted(lines,by:0.51,fps:30)
