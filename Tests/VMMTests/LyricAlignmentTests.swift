@@ -2,6 +2,16 @@ import XCTest
 @testable import VMM
 
 final class LyricAlignmentTests:XCTestCase {
+    func testApplyingSparseCandidatesDoesNotCorruptNeighbouringTimes()throws {
+        let lines=try LyricTemplatePlanner.distribute("一\n二\n三",start:0,interval:2,fps:30)
+        let crossing=LyricAlignmentMatch(index:0,text:"一",start:4,end:5)
+        XCTAssertThrowsError(try LyricAlignment.applying([crossing],to:lines,fps:30))
+        XCTAssertEqual(lines[0].start,0)
+        let safe=LyricAlignmentMatch(index:0,text:"一",start:0.5,end:1.5)
+        let result=try LyricAlignment.applying([safe],to:lines,fps:30)
+        XCTAssertEqual(result[0].start,0.5);XCTAssertEqual(result[1],lines[1])
+        XCTAssertThrowsError(try LyricAlignment.applying([LyricAlignmentMatch(index:0,text:"別の歌詞",start:0.5,end:1.5)],to:lines,fps:30))
+    }
     func testMatchesPreserveLyricsAndReportUnknown()throws {
         var clip=Clip(kind:.audio,name:"voice",track:0,start:10,duration:10);clip.playbackRate=2
         let tokens=[TranscriptToken(text:"アイ",start:2,duration:1),TranscriptToken(text:"うえ",start:5,duration:1)]

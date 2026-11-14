@@ -208,16 +208,12 @@ struct LyricTemplateSheet:View {
         if panel.runModal() == .OK,let url=panel.url {if directory {alignmentModels=url.path} else {alignmentPython=url.path}}
     }
     private func applyAlignment(){
-        guard !lines.contains(where:{$0.segments != nil || $0.ruby?.contains(where:{$0.timings != nil}) == true}) else{error=L("文字やルビのタイミングが設定された歌詞には自動候補を反映できません。既存のタイミングを手動で調整してください。");return}
-        for match in alignment where match.matched && lines.indices.contains(match.index) && lines[match.index].text==match.text {
-            if let start=match.start,let end=match.end {lines[match.index].start=start;lines[match.index].end=end}
-        }
-        invalidatePreview()
+        do {lines=try LyricAlignment.applying(alignment,to:lines,fps:fps);error=nil;invalidatePreview()}
+        catch {self.error=error.localizedDescription}
     }
     private func applyAlignmentLine(_ match:LyricAlignmentMatch){
-        guard lines.indices.contains(match.index),lines[match.index].text==match.text,let start=match.start,let end=match.end else{return}
-        guard lines[match.index].segments==nil,lines[match.index].ruby?.contains(where:{$0.timings != nil}) != true else{error=L("文字やルビのタイミングが設定された歌詞には自動候補を反映できません。既存のタイミングを手動で調整してください。");return}
-        lines[match.index].start=start;lines[match.index].end=end;invalidatePreview()
+        do {lines=try LyricAlignment.applying([match],to:lines,fps:fps);error=nil;invalidatePreview()}
+        catch {self.error=error.localizedDescription}
     }
     private func updatePreview(){do {
         guard !rendering else{return}
@@ -258,8 +254,8 @@ struct LyricTemplateSheet:View {
                     ColorPicker(L("歌う前の文字色"),selection:Binding(get:{Color(nsColor:NSColor(hex:beforeColor))},set:{beforeColor=NSColor($0).hex;invalidatePreview()}),supportsOpacity:false)
                     ColorPicker(L("歌った後の文字色"),selection:Binding(get:{Color(nsColor:NSColor(hex:afterColor))},set:{afterColor=NSColor($0).hex;invalidatePreview()}),supportsOpacity:false)
                 } else {VMMMenuPicker(L("文字の演出"),selection:$motion){VMMOptions(LyricMotion.allCases,id:\.self){VMMChoice(text:L($0.title),value:$0)}}.onChange(of:motion){_ in invalidatePreview()}}
-                Button(L("歌詞を時間に配置")){prepare()}
-                Text(L("再配置すると、調整済みの行は入力欄の内容で置き換わります。")).foregroundColor(.secondary)
+                Button(L("歌詞を等間隔に仮配置")){prepare()}
+                Text(L("仮配置は音声に同期しません。再配置すると調整済みの行は置き換わります。")).foregroundColor(.secondary)
                 Spacer()
             }.padding(6).frame(minWidth:280,idealWidth:350)
             VStack(alignment:.leading,spacing:8) {
@@ -298,7 +294,7 @@ struct LyricTemplateSheet:View {
                 }}}
             }.padding(6).frame(minWidth:440,maxWidth:.infinity)
         }
-        if let error {Text(error).foregroundColor(.red)}
+        if let error {Text(L(error)).foregroundColor(.red)}
         HStack {Spacer();Button(L("キャンセル")){dismiss()};Button(L("タイムラインに配置")){do{try store.placeLyricTemplate(lines:lines,trackID:trackID,fps:fps,motion:motion,karaoke:karaoke,lead:lead,tail:tail,beforeColor:beforeColor,afterColor:afterColor);dismiss()}catch{self.error=error.localizedDescription}}.disabled(lines.isEmpty).keyboardShortcut(.defaultAction)}
     }.padding(20).frame(minWidth:900,minHeight:600).onChange(of:store.projectRevision){_ in alignment=[];alignTask?.cancel();invalidatePreview()}.onDisappear{alignTask?.cancel()}}
 }

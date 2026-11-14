@@ -10,6 +10,20 @@ struct LyricAlignmentMatch:Codable,Equatable {
 enum LyricAlignment {
     static let maximumSeconds=900.0
     static let recognitionChunkSeconds=30.0
+    /// Never leave the draft in an invalid state when sparse matches cross
+    /// neighbouring lines which still have provisional or manually set times.
+    static func applying(_ matches:[LyricAlignmentMatch],to lines:[LyricDraftLine],fps:Int)throws->[LyricDraftLine] {
+        var candidate=lines
+        for match in matches where match.matched {
+            guard candidate.indices.contains(match.index),candidate[match.index].text==match.text,
+                  let start=match.start,let end=match.end else{throw VMMError.message("歌詞が変更されました。同期候補を作り直してください。")}
+            guard candidate[match.index].segments==nil,candidate[match.index].ruby?.contains(where:{$0.timings != nil}) != true else{throw VMMError.message("文字やルビのタイミングが設定された歌詞には自動候補を反映できません。既存のタイミングを手動で調整してください。")}
+            candidate[match.index].start=start;candidate[match.index].end=end
+        }
+        do {_=try LyricTemplatePlanner.clips(candidate,track:0,fps:fps,motion:.none)}
+        catch {throw VMMError.message("同期候補が隣接する行の時刻と重なります。行を手動で調整してから反映してください。")}
+        return candidate
+    }
     /// Each request stays within the speech recognizer limit. Token times remain
     /// relative to the original trimmed source, including when playback rate differs.
     static func chunks(_ clip:Clip)throws->[(clip:Clip,sourceDelta:Double)] {
