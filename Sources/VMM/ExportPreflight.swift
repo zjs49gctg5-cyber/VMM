@@ -104,7 +104,7 @@ struct ExportReportView:View {
     var body:some View {VStack(alignment:.leading,spacing:8){
         MixLoudnessControls(store:store)
         Divider()
-        Button(L("書き出し前チェック")){Task{await store.checkExport()}}.disabled(store.exportChecking)
+        Button(L("書き出し前チェック")){commitActiveFieldEditing();Task{await store.checkExport()}}.disabled(store.exportChecking)
         if store.exportChecking {ProgressView()}
         if let report=store.exportReport {
             Text(report.canExport ? L("書き出し可能です。警告があれば内容を確認してください。"):L("書き出し前にエラーを解消してください。"))

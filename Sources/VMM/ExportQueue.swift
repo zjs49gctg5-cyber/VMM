@@ -143,8 +143,8 @@ struct ExportActionsView:View {
     @ObservedObject var store:EditorStore
     @ObservedObject var queue:ExportQueue
     var body:some View {VStack(alignment:.leading){HStack {
-        Button(L("動画を書き出す")){store.exportMovie()}.buttonStyle(.borderedProminent).disabled(store.busy || !store.generatingSpeech.isEmpty || queue.runningID != nil)
-        Button(L("書き出しキューへ追加")){store.chooseQueueExport()}.disabled(store.busy || !store.generatingSpeech.isEmpty)
-        Button(L("音声のみ（WAV）")){store.exportAudio()}.disabled(store.busy || !store.generatingSpeech.isEmpty || queue.runningID != nil)
-    };Button(L("他編集ソフトへ（描画済みXML・ProRes・WAV）")){store.exportInterchange()}.disabled(store.busy || !store.generatingSpeech.isEmpty || queue.runningID != nil)}}
+        Button(L("動画を書き出す")){commitActiveFieldEditing();store.exportMovie()}.buttonStyle(.borderedProminent).disabled(store.busy || !store.generatingSpeech.isEmpty || queue.runningID != nil)
+        Button(L("書き出しキューへ追加")){commitActiveFieldEditing();store.chooseQueueExport()}.disabled(store.busy || !store.generatingSpeech.isEmpty)
+        Button(L("音声のみ（WAV）")){commitActiveFieldEditing();store.exportAudio()}.disabled(store.busy || !store.generatingSpeech.isEmpty || queue.runningID != nil)
+    };Button(L("他編集ソフトへ（描画済みXML・ProRes・WAV）")){commitActiveFieldEditing();store.exportInterchange()}.disabled(store.busy || !store.generatingSpeech.isEmpty || queue.runningID != nil)}}
 }
