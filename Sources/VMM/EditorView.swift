@@ -452,6 +452,8 @@ struct TextStyleControls: View {
     @ObservedObject var store: EditorStore
     let clip: Clip
     @State private var showTextRuns=false
+    @State private var showLyricSegments=false
+    @State private var showLyricRuby=false
     func binding<T>(_ key: WritableKeyPath<TextStyle, T>) -> Binding<T> {
         Binding(get: { (store.project.clips.first { $0.id == clip.id }?.textStyle ?? TextStyle())[keyPath: key] }, set: { value in
             store.edit(clip.id) { c in var style = c.textStyle ?? TextStyle(); style[keyPath: key] = value; c.textStyle = style }
@@ -479,6 +481,15 @@ struct TextStyleControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             Divider()
+            Button(L("ルビを編集…")){showLyricRuby=true}.sheet(isPresented:$showLyricRuby){LyricRubyEditor(store:store,clip:clip)}
+            Toggle(L("歌詞ワイプ"),isOn:Binding(get:{clip.lyricWipe != nil},set:{enabled in store.edit(clip.id){$0.lyricWipe=enabled ? LyricWipe(end:max(0.001,$0.duration)):nil}}))
+            if let wipe=clip.lyricWipe {
+                ColorPicker(L("ワイプ後の文字色"),selection:Binding(get:{Color(nsColor:NSColor(hex:wipe.color))},set:{value in store.edit(clip.id){$0.lyricWipe?.color=NSColor(value).hex}}),supportsOpacity:false)
+                NumberInput(title:"ワイプ開始",value:Binding(get:{wipe.start},set:{value in store.edit(clip.id){$0.lyricWipe?.start=min(value,max(0,wipe.end-0.001))}}),range:0...86400,unit:"秒")
+                NumberInput(title:"ワイプ終了",value:Binding(get:{wipe.end},set:{value in store.edit(clip.id){$0.lyricWipe?.end=max(wipe.start+0.001,value)}}),range:0...86400,unit:"秒")
+                Button(L("文字・単語のタイミング…")){showLyricSegments=true}.sheet(isPresented:$showLyricSegments){LyricSegmentEditor(store:store,clip:clip)}
+                if wipe.segments != nil {Button(L("行全体のワイプに戻す")){store.edit(clip.id){$0.lyricWipe?.segments=nil}}}
+            }
             Button(L("選択した文字を装飾…")){showTextRuns=true}.sheet(isPresented:$showTextRuns){TextRunStyleSheet(store:store,clip:clip)}
             gradient("文字色", \.fillGradient)
             Toggle(L("縁取り"), isOn: binding(\.outline))

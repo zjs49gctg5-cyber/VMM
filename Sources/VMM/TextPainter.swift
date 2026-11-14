@@ -16,20 +16,36 @@ final class TextPainter {
         let alignment:TextAlignment
         let animated:Bool
         let runs:[TextRun]?
+        let ruby:[LyricRuby]?
         let scale:Double
     }
-    private struct GlyphPiece {var index:Int;var path:CGPath}
+    private struct GlyphPiece {var index:Int;var path:CGPath;var ruby:Bool=false}
     private struct GlyphLayout {var path:CGPath;var pieces:[GlyphPiece]}
-    private struct PaintPiece {var path:CGPath;var alpha:Double;var blur:Double;var style:TextRunStyle}
+    private struct PaintPiece {var path:CGPath;var alpha:Double;var blur:Double;var style:TextRunStyle;var index:Int?=nil;var ruby:Bool=false}
     private let ci=CIContext(options:[.cacheIntermediates:false])
     private var cache: [UUID: (LayoutKey, GlyphLayout)] = [:]
     private func layout(_ clip:Clip,projectWidth:Int,visibleCharacters:Int?)->(glyphs:GlyphLayout,size:Double) {
         let style=clip.textStyle ?? TextStyle()
-        let key = LayoutKey(text: clip.text, size: clip.fontSize * clip.scale, width: Double(projectWidth) * (style.captionWidth ?? 0.9),font:style.fontName ?? "HiraginoSans-W6",tracking:style.tracking ?? 0,spacing:style.lineSpacing ?? 0,visible:visibleCharacters,alignment:style.alignment ?? .center,animated:clip.textAnimation != nil,runs:clip.textRuns,scale:clip.scale)
+        let key = LayoutKey(text: clip.text, size: clip.fontSize * clip.scale, width: Double(projectWidth) * (style.captionWidth ?? 0.9),font:style.fontName ?? "HiraginoSans-W6",tracking:style.tracking ?? 0,spacing:style.lineSpacing ?? 0,visible:visibleCharacters,alignment:style.alignment ?? .center,animated:clip.textAnimation != nil || clip.lyricWipe?.segments != nil,runs:clip.textRuns,ruby:clip.lyricRuby,scale:clip.scale)
         let path: GlyphLayout
         if let hit = cache[clip.id], hit.0 == key { path = hit.1 }
         else {
-            path = glyphPath(text: key.text, size: key.size, width: key.width,fontName:key.font,tracking:key.tracking,spacing:key.spacing,visible:key.visible,alignment:key.alignment,animated:key.animated,runs:key.runs,scale:key.scale)
+            var layout=glyphPath(text: key.text, size: key.size, width: key.width,fontName:key.font,tracking:key.tracking,spacing:key.spacing,visible:key.visible,alignment:key.alignment,animated:key.animated,runs:key.runs,scale:key.scale)
+            if let ruby=key.ruby,!ruby.isEmpty {
+                let combined=CGMutablePath();combined.addPath(layout.path)
+                for item in ruby where item.startIndex>=0 && item.endIndex>item.startIndex && item.endIndex<=key.text.count && (key.visible == nil || item.endIndex<=key.visible!) {
+                    let base=layout.pieces.filter{$0.index>=item.startIndex && $0.index<item.endIndex}.reduce(CGRect.null){$0.union($1.path.boundingBoxOfPath)}
+                    guard !base.isNull,base.width>0 else{continue}
+                    let size=key.size*0.42,width=min(key.width,max(base.width,size*Double(item.text.count)))
+                    let annotation=glyphPath(text:item.text,size:size,width:width,fontName:key.font,tracking:0,spacing:0,visible:nil,alignment:.center)
+                    let bounds=annotation.path.boundingBoxOfPath
+                    guard !bounds.isNull else{continue}
+                    var transform=CGAffineTransform(translationX:base.midX-bounds.midX,y:base.minY-bounds.maxY-key.size*0.06)
+                    if let shape=annotation.path.copy(using:&transform) {combined.addPath(shape);layout.pieces.append(GlyphPiece(index:item.startIndex,path:shape,ruby:true))}
+                }
+                layout.path=combined
+            }
+            path=layout
             if cache.count > 256 { cache.removeAll() }
             cache[clip.id] = (key, path)
         }
@@ -40,19 +56,19 @@ final class TextPainter {
         let (glyphs,fontSize)=layout(clip,projectWidth:projectWidth,visibleCharacters:visibleCharacters)
         guard !glyphs.path.isEmpty else { return }
         var pieces:[PaintPiece]
-        if clip.textAnimation == nil && (clip.textRuns ?? []).isEmpty {pieces=[PaintPiece(path:glyphs.path,alpha:1,blur:0,style:TextRunStyle())]}
+        if clip.textAnimation == nil && clip.lyricWipe?.segments == nil && (clip.textRuns ?? []).isEmpty {pieces=[PaintPiece(path:glyphs.path,alpha:1,blur:0,style:TextRunStyle())]}
         else {
             let styles=TextRunEditing.styles(clip.textRuns,count:clip.text.count)
             pieces=glyphs.pieces.compactMap{piece in
                 let custom=styles.indices.contains(piece.index) ? styles[piece.index]:TextRunStyle()
-                guard let animation=clip.textAnimation else{return PaintPiece(path:piece.path,alpha:1,blur:0,style:custom)}
+                guard let animation=clip.textAnimation else{return PaintPiece(path:piece.path,alpha:1,blur:0,style:custom,index:piece.index,ruby:piece.ruby)}
                 let pose=animation.pose(index:piece.index,count:clip.text.count,time:time),box=piece.path.boundingBoxOfPath
                 guard pose.opacity>0 else{return nil}
                 var transform=CGAffineTransform(translationX:box.midX,y:box.midY+pose.y*clip.scale).rotated(by:pose.rotation * .pi/180).scaledBy(x:pose.scale,y:pose.scale).translatedBy(x:-box.midX,y:-box.midY)
-                return piece.path.copy(using:&transform).map{PaintPiece(path:$0,alpha:pose.opacity,blur:pose.blur*clip.scale,style:custom)}
+                return piece.path.copy(using:&transform).map{PaintPiece(path:$0,alpha:pose.opacity,blur:pose.blur*clip.scale,style:custom,index:piece.index,ruby:piece.ruby)}
             }
         }
-        if pieces.count>1,pieces.allSatisfy({$0.alpha==1 && $0.blur==0 && $0.style==pieces[0].style}) {let combined=CGMutablePath();for piece in pieces{combined.addPath(piece.path)};pieces=[PaintPiece(path:combined,alpha:1,blur:0,style:pieces[0].style)]}
+        if clip.lyricWipe?.segments == nil,pieces.count>1,pieces.allSatisfy({$0.alpha==1 && $0.blur==0 && $0.style==pieces[0].style}) {let combined=CGMutablePath();for piece in pieces{combined.addPath(piece.path)};pieces=[PaintPiece(path:combined,alpha:1,blur:0,style:pieces[0].style)]}
         let gradientBounds=pieces.reduce(CGRect.null){$0.union($1.path.boundingBoxOfPath)}
         context.saveGState();defer{context.restoreGState()}
         context.translateBy(x:center.x,y:center.y)
@@ -76,6 +92,37 @@ final class TextPainter {
         }
         for piece in pieces {context.saveGState();context.setAlpha(piece.alpha)
             blurred(piece.path,amount:piece.blur,context:context){c in self.paint(piece.path,color:piece.style.color ?? clip.color,gradient:style.fillGradient,context:c,bounds:gradientBounds)};context.restoreGState()
+        }
+        if let wipe=clip.lyricWipe,let segments=wipe.segments {
+            for segment in segments {
+                let members=pieces.filter{piece in !piece.ruby && (piece.index.map{$0>=segment.startIndex && $0<segment.endIndex} ?? false)}
+                let bounds=members.reduce(CGRect.null){$0.union($1.path.boundingBoxOfPath)}
+                let progress=segment.end==segment.start ? (time>=segment.end ? 1.0:0.0):min(1,max(0,(time-segment.start)/(segment.end-segment.start)))
+                guard !bounds.isNull,bounds.width>0,progress>0 else{continue}
+                context.saveGState();context.clip(to:CGRect(x:bounds.minX,y:bounds.minY-1,width:bounds.width*progress,height:bounds.height+2))
+                for piece in members {context.saveGState();context.setAlpha(piece.alpha);blurred(piece.path,amount:piece.blur,context:context){c in self.paint(piece.path,color:wipe.color,gradient:nil,context:c,bounds:gradientBounds)};context.restoreGState()}
+                context.restoreGState()
+            }
+            for item in clip.lyricRuby ?? [] {
+                let related=segments.filter{max($0.startIndex,item.startIndex)<min($0.endIndex,item.endIndex)}
+                guard let first=related.first,let last=related.last,let piece=pieces.first(where:{$0.ruby && $0.index==item.startIndex}) else{continue}
+                let bounds=piece.path.boundingBoxOfPath,progress=item.progress(at:time,start:first.start,end:last.end)
+                guard !bounds.isNull,bounds.width>0,progress>0 else{continue}
+                context.saveGState();context.clip(to:CGRect(x:bounds.minX,y:bounds.minY-1,width:bounds.width*progress,height:bounds.height+2));context.setAlpha(piece.alpha)
+                blurred(piece.path,amount:piece.blur,context:context){c in self.paint(piece.path,color:wipe.color,gradient:nil,context:c,bounds:gradientBounds)}
+                context.restoreGState()
+            }
+        } else if let wipe=clip.lyricWipe,gradientBounds.width>0 {
+            let progress=wipe.progress(at:time)
+            if progress>0 {
+                context.saveGState()
+                context.clip(to:CGRect(x:gradientBounds.minX,y:gradientBounds.minY-1,width:gradientBounds.width*progress,height:gradientBounds.height+2))
+                for piece in pieces {context.saveGState();context.setAlpha(piece.alpha)
+                    blurred(piece.path,amount:piece.blur,context:context){c in self.paint(piece.path,color:wipe.color,gradient:nil,context:c,bounds:gradientBounds)}
+                    context.restoreGState()
+                }
+                context.restoreGState()
+            }
         }
         context.endTransparencyLayer()
     }
@@ -106,8 +153,8 @@ final class TextPainter {
         return rect
     }
     func bounds(_ clip:Clip,projectWidth:Int)->CGRect {
-        let style=clip.textStyle ?? TextStyle()
-        return glyphPath(text:clip.text,size:clip.fontSize,width:Double(projectWidth)*(style.captionWidth ?? 0.9),fontName:style.fontName ?? "HiraginoSans-W6",tracking:style.tracking ?? 0,spacing:style.lineSpacing ?? 0,visible:nil,alignment:style.alignment ?? .center,runs:clip.textRuns).path.boundingBoxOfPath
+        var unscaled=clip;unscaled.scale=1
+        return layout(unscaled,projectWidth:projectWidth,visibleCharacters:nil).glyphs.path.boundingBoxOfPath
     }
     private func paint(_ path: CGPath, color: String, gradient: TextGradient?, context: CGContext,bounds:CGRect?=nil) {
         context.saveGState(); defer { context.restoreGState() }

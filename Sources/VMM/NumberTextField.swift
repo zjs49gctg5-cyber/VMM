@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+/// Commit an active field before an action snapshots the current settings.
+@MainActor func commitActiveFieldEditing() {
+    NSApp.keyWindow?.makeFirstResponder(nil)
+}
+
 /// Handle arrows in the field editor, where SwiftUI move commands are consumed.
 struct NumberTextField:NSViewRepresentable {
     @Binding var value:Double

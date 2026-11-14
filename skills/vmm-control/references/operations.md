@@ -51,6 +51,18 @@ VMMのメニュー「MCP接続…」で有効化し、「MCPクライアント�
 
 字幕設定: `reading`は音声専用文字、`textRevealRate`は字/秒（nullで無効）、`textStyle.fontName`はmacOSのPostScript名、`tracking`は文字サイズ比（-0.2〜2）、`lineSpacing`は文字サイズ比（0〜2）、`captionWidth`は画面幅比（0.1〜1）。`textStyle.alignment`は`left`/`center`/`right`/`distributed`（省略時は中央）。`distributed`は最終行も含め文字間を配置幅に広げます。`ducking`はセリフ中の残り音量0〜1（audio/video、nullで無効）。
 
+歌詞ワイプ: テキスト・セリフの `lyricWipe` に `{"start":0.5,"end":2.5,"color":"FFDD33"}` を指定します。時刻はアイテムのアニメーション時間（秒）で、色はRGBの16進6桁です。`null`で解除します。区間を指定しない場合は行全体を一定速度でワイプします。
+
+文字・単語単位にするには `lyricWipe.segments` に `[{"id":"<UUID>","startIndex":0,"endIndex":2,"start":0.5,"end":1.2}]` のように指定します。文字位置は書記素単位で0始まり、endIndexは含みません。範囲と時刻は昇順で重ならず、改行をまたげません。設定全体を指定し直して更新し、`segments:null` で行単位に戻します。
+
+ルビはテキスト・セリフの `lyricRuby` に `[{"id":"<UUID>","startIndex":0,"endIndex":2,"text":"かし"}]` のように指定します。範囲は文字順で重ならず、改行をまたげません。`null` で解除します。
+
+`vmm_karaoke_import` は `{"text":"[00:01.00]歌詞\n[00:03.00]","track":0,"beforeColor":"FFFFFF","afterColor":"FFDD33"}` のように行単位のLRCを指定し、上下２段の歌詞字幕を一括配置します。色は省略可能なRGBの16進6桁です。時刻はプロジェクト上の絶対秒です。インラインタグ、ルビ、オフセットに対応し、失敗時は変更しません。生成されたIDを返し、１回のUndoで取り消せます。
+
+`vmm_karaoke_importParts` の `parts` に上記と同じ `text`、`track`、任意の色と `topY`・`bottomY`（画面高さに対する0〜1の比）を指定すると、同時刻を含む複数パートをまとめて配置します。最大16パート。ロックや不正値がある場合は全体を変更しません。
+
+`vmm_karaoke_align` は音声・動画・生成済みセリフの `clipID` と改行区切りの `text` から行の時刻候補を作ります。`method` は `speech`（既定）または歌声分離後にmacOS音声認識を使う `separated` を指定します。後者は事前に歌詞演出画面でPythonとDemucsモデルフォルダを設定します。`vmm_job` の `matches` は入力順の `text`、`matched`、絶対秒の `start`・`end` を返し、未一致は `null` です。候補はプロジェクトに自動適用されません。`vmm_karaoke_separate` に `clipID` を渡すと、分離した歌声を素材ライブラリに登録するジョブを開始します。両方とも使用区間と元素材は各15分以内で、逆再生・可変速度は不可です。認識・分離に失敗する場合や時刻がずれる場合があるため、結果を確認してください。
+
 設定の例：`{ "command":"settings.update", "properties": { "exportContainer":"MOV", "exportCodec":"HEVC", "exportQuality":0.75, "rangeStart":0, "rangeEnd":10 } }`。rangeEnd=0は全体の終端。MP4/MOV、H.264/HEVCに対応。プロキシは720p以下の編集用MP4、出力は元素材を使用。フォント本体は共有パッケージに含みません。
 
 ## 付属CLI

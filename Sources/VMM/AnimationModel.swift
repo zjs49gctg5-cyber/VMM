@@ -369,6 +369,27 @@ extension Clip {
         return min(2, max(0, volume))
     }
     func validateAnimation() throws {
+        if lyricWipe != nil {guard [.text,.speech].contains(kind) else{throw VMMError.message("歌詞ワイプはテキスト・セリフに設定してください。")};try lyricWipe?.validate(textCount:text.count)}
+        if let segments=lyricWipe?.segments {let chars=Array(text);guard segments.allSatisfy({!chars[$0.startIndex..<$0.endIndex].contains(where:{$0.isNewline})}) else{throw VMMError.message("歌詞の区間を改行にまたがって指定できません。")}}
+        if let ruby=lyricRuby {
+            let chars=Array(text)
+            guard [.text,.speech].contains(kind),ruby.count<=200,Set(ruby.map(\.id)).count==ruby.count else{throw VMMError.message("ルビの設定が不正です。")}
+            var end=0
+            for item in ruby {
+                guard item.startIndex>=end,item.endIndex>item.startIndex,item.endIndex<=chars.count,!item.text.isEmpty,item.text.count<=100,!item.text.contains(where:{$0.isNewline}),!chars[item.startIndex..<item.endIndex].contains(where:{$0.isNewline}) else{throw VMMError.message("ルビの文字範囲または読みが不正です。")}
+                if let timings=item.timings {
+                    guard timings.count<=100 else{throw VMMError.message("ルビのタイミングが多すぎます。")}
+                    var previousIndex = -1,previousTime = -1.0
+                    for point in timings {guard point.index>previousIndex,point.index<item.text.count,point.offset.isFinite,point.offset>=0,point.offset>=previousTime,point.offset<=86400 else{throw VMMError.message("ルビのタイミングが不正です。")};previousIndex=point.index;previousTime=point.offset}
+                    if let wipe=lyricWipe {
+                        let spans=wipe.segments?.filter{max($0.startIndex,item.startIndex)<min($0.endIndex,item.endIndex)} ?? []
+                        let span=(spans.last?.end ?? wipe.end)-(spans.first?.start ?? wipe.start)
+                        guard timings.allSatisfy({$0.offset<=span+0.0001}) else{throw VMMError.message("ルビのタイミングが親文字の終了を超えています。")}
+                    }
+                }
+                end=item.endIndex
+            }
+        }
         if spatialAnimation != nil {guard supportsParent || kind == .adjustment else{throw VMMError.message("このアイテムには移動パスを設定できません。")}}
         if textAnimation != nil {guard [.text,.speech].contains(kind) else{throw VMMError.message("文字アニメーションはテキスト・セリフに設定してください。")}}
         try spatialAnimation?.validated()
