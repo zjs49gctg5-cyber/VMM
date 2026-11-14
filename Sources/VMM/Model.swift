@@ -95,7 +95,60 @@ struct TextStyle: Codable, Equatable {
     var captionWidth:Double?
 }
 
+struct LyricWipeSegment:Codable,Equatable,Identifiable {
+    var id=UUID()
+    var startIndex:Int
+    var endIndex:Int
+    var start:Double
+    var end:Double
+}
+struct LyricRubyTiming:Codable,Equatable {
+    var index:Int
+    /// Seconds relative to the beginning of the parent text's wipe.
+    var offset:Double
+}
+struct LyricRuby:Codable,Equatable,Identifiable {
+    var id=UUID()
+    var startIndex:Int
+    var endIndex:Int
+    var text:String
+    var timings:[LyricRubyTiming]?
+    func progress(at time:Double,start:Double,end:Double)->Double {
+        guard end>start else{return time>=end ? 1:0}
+        let points=[LyricRubyTiming(index:0,offset:0)]+(timings ?? [])+[LyricRubyTiming(index:text.count,offset:end-start)]
+        let elapsed=time-start
+        if elapsed<0{return 0};if elapsed>=end-start{return 1}
+        for i in 1..<points.count where elapsed<points[i].offset {
+            let a=points[i-1],b=points[i],span=b.offset-a.offset
+            let ratio=span>0 ? (elapsed-a.offset)/span:1
+            return min(1,max(0,(Double(a.index)+Double(b.index-a.index)*ratio)/Double(max(1,text.count))))
+        }
+        return 1
+    }
+}
+struct LyricWipe:Codable,Equatable {
+    var start:Double=0
+    var end:Double=2
+    var color:String="FFDD33"
+    var segments:[LyricWipeSegment]?
+    func progress(at time:Double)->Double {min(1,max(0,(time-start)/(end-start)))}
+    func validate(textCount:Int?=nil) throws {
+        guard start.isFinite,end.isFinite,start>=0,end>start,end<=86400,
+              color.count == 6,color.allSatisfy({$0.isHexDigit && $0.isASCII}) else {throw VMMError.message("歌詞ワイプの時刻または色が不正です。")}
+        if let segments {
+            guard !segments.isEmpty,segments.count<=2000,Set(segments.map(\.id)).count==segments.count else{throw VMMError.message("歌詞の区間が不正です。")}
+            var lastIndex=0,lastTime=0.0
+            for segment in segments {
+                guard segment.startIndex>=lastIndex,segment.endIndex>segment.startIndex,segment.endIndex <= (textCount ?? 10000),segment.start.isFinite,segment.end.isFinite,segment.start>=lastTime,segment.end>=segment.start,segment.end<=86400 else{throw VMMError.message("歌詞の文字範囲または時刻が不正です。")}
+                lastIndex=segment.endIndex;lastTime=segment.end
+            }
+        }
+    }
+}
+
 struct Clip: Codable, Identifiable, Equatable {
+    var lyricRuby:[LyricRuby]?
+    var lyricWipe:LyricWipe?
     var cameraDepth:Double?
     var precompositionID:UUID?
     var spatialAnimation:SpatialAnimation?

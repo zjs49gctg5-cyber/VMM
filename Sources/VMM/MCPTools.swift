@@ -5,6 +5,10 @@ import CoreFoundation
     static let reads=["state","capabilities","catalog","extensions","settings","exportQueue","job"]
     // Required arguments have '!'; nested model objects are validated by the shared editor commands.
     static let fields:[String:String]=[
+        "karaoke.import":"text! track! beforeColor afterColor",
+        "karaoke.align":"clipID! text! language method",
+        "karaoke.separate":"clipID!",
+        "karaoke.importParts":"parts!",
         "animation.analyzeAudio":"clipID! sourceClipID!","animation.track":"clipID! sourceClipID! region! sourceIn! duration! sampleRate followScale",
         "export.interchange":"path!",
         "export.audio":"path! overwrite","selection.crossfade":"",
@@ -33,6 +37,10 @@ import CoreFoundation
         "state":"","capabilities":"","catalog":"","extensions":"","settings":"","exportQueue":"","job":"jobID!"
     ]
     static let descriptions:[String:String]=[
+        "karaoke.import":"Import LRC/KRA lyric text, including inline timing, @Ruby and @Offset, onto a zero-based track as editable alternating karaoke captions. Optional beforeColor and afterColor are six-digit RGB. Times are project-absolute. Atomic, one Undo.",
+        "karaoke.align":"Suggest line timings; returns jobID and never edits the project. method speech (default) uses on-device recognition; method separated first separates vocals locally and then uses on-device recognition. Both ranges <=15 minutes. Poll vmm_job. Review all timings; unmatched lines have null times.",
+        "karaoke.separate":"Separate vocals from the selected clip with locally configured Demucs and add the result to the project media library. Returns jobID and assetIDs. Source and timeline ranges must both be <=15 minutes.",
+        "karaoke.importParts":"Import multiple simultaneous LRC/KRA parts atomically. Each part has text, zero-based track, optional beforeColor, afterColor, topY and bottomY (0..1). One Undo.",
         "animation.analyzeAudio":"Analyze a timeline audio/video/speech source and store amplitude, low-frequency RMS and onset envelopes on the visual target. Returns jobID. Max 1 hour of source audio; timing/rate captured at analysis time. Reanalyze after source edits. One Undo.",
         "animation.track":"Track an object rectangle in a video and create an editable spatial path on the target. region:{x,y,width,height}, normalized top-left video coordinates. sourceIn: seconds inside source clip; duration: 0.05..30, interval must overlap target. sampleRate:1..30 default15, followScale:false default. Position/size only. Stops on low confidence, holds last point. Returns jobID and confidence/lostAt. Replaces target spatial path; one Undo.",
         "export.interchange":"Export a new handoff folder: baked ProRes master, 48kHz/24-bit WAV, FCPXML 1.10 and Premiere/FCP7 XML. Cuts at VMM item boundaries and markers are preserved. Effects, captions, layers and audio processing are baked, not editable native parameters. Never overwrites an existing folder. Poll returned jobID.",
@@ -80,7 +88,7 @@ import CoreFoundation
             if field.hasSuffix("!"){required.append(key)}
             var value:[String:Any]
             if ["properties","package","character","values","region"].contains(key){value=["type":"object"]}
-            else if ["paths","clipIDs","tags","entries","operations"].contains(key){value=["type":"array","items":["type":["entries","operations"].contains(key) ? "object":"string"],"maxItems":20000]}
+            else if ["paths","clipIDs","tags","entries","operations","parts"].contains(key){value=["type":"array","items":["type":["entries","operations","parts"].contains(key) ? "object":"string"],"maxItems":key == "parts" ? 16:20000]}
             else if ["force","replace","enabled","onGrid","deleteItems","overwrite","async","discardChanges","dryRun","followScale"].contains(key){value=["type":"boolean"]}
             else if ["track","count","seed","from","to","expectedRevision","offset"].contains(key){value=["type":"integer"]}
             else if ["time","start","offset","strength","beats","gate","pitch","delta","sourceIn","sourceOut","duration","sampleRate"].contains(key){value=["type":"number"]}
@@ -89,6 +97,7 @@ import CoreFoundation
             if key=="path" || key=="paths"{value["description"]="Absolute local filesystem path(s)."}
             if key=="properties"{value["description"]="Model properties patch; nested objects replace existing nested settings. See VMM operation/model reference."}
             if key=="kind"{value["enum"]=ClipKind.allCases.map(\.rawValue)}
+            if key=="method",command=="karaoke.align"{value["enum"]=["speech","separated"]}
             if key=="template",command=="character.captionTemplate"{value["enum"]=CharacterCaptionTemplate.allCases.map(\.rawValue)}
             properties[key]=value
         }

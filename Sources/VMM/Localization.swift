@@ -8,6 +8,20 @@ enum VMMLocalization {
         return english[value] ?? DiagnosticLocalization.translate(value) ?? value
     }
     static let english:[String:String]=[
+"同期方法":"Alignment method",
+"音声認識":"Speech recognition",
+"歌声分離して音声認識":"Separate vocals & recognize speech",
+"Pythonを選択…":"Choose Python…",
+"モデルフォルダを選択…":"Choose model folder…",
+"未設定":"Not configured",
+"歌声を分離して素材に追加":"Separate vocals and add to library",
+"歌声をローカルで分離し、macOSの音声認識で候補を作ります。精度は音声により異なります。":"Separate vocals locally and create suggestions with macOS speech recognition. Accuracy varies with the audio.",
+"候補を反映":"Apply candidates",
+"行の候補":"lines suggested",
+"要確認":"Review",
+"同期候補":"Suggested",
+"候補を再生":"Play candidate",
+"この行に反映":"Apply this line",
 "基本変形":"Basic transform",
 "エフェクトの描画結果を作成できませんでした。":"Could not create the rendered effect image.",
 "エフェクト「%@」の描画に失敗しました。\n%@":"Could not render the effect “%@”.\n%@",

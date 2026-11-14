@@ -12,7 +12,7 @@ import Darwin
     private var socketFolder:URL?
     private var generation=UUID()
     init(connectionURL:URL?=nil) {
-        self.connectionURL=connectionURL ?? FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("VMM/mcp-connection.json")
+        self.connectionURL=connectionURL ?? VMMPaths.support.appendingPathComponent("mcp-connection.json")
     }
     var helperURL:URL {
         let bundled=Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/VMMMCPBridge")

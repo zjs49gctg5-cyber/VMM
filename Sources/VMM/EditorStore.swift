@@ -150,6 +150,7 @@ final class EditorStore: ObservableObject {
         if before.text != after.text && before.textRuns == after.textRuns {after.textRuns=TextRunEditing.rebase(before.textRuns,old:before.text,new:after.text)}
         do {
             try TextRunEditing.validate(after.textRuns,text:after.text)
+            if after.lyricWipe?.segments != nil || after.lyricRuby != nil {try after.validateAnimation()}
             if before.effects?.compactMap(\.lut) != after.effects?.compactMap(\.lut) {
                 try after.validateAnimation();var check=project;check.clips[index]=after;try check.validateLUTBudget()
             }
@@ -560,7 +561,7 @@ final class EditorStore: ObservableObject {
             return SourceEditing.fragment(original,start:original.start,end:end)
         }
         if edge < 0 {
-            let animated = !(original.psd?.selectionKeys?.isEmpty ?? true) || original.animation != nil || original.spatialAnimation != nil || original.textAnimation != nil || original.kind == .particles || original.effects?.contains(where: { !$0.keys.isEmpty }) == true
+            let animated = !(original.psd?.selectionKeys?.isEmpty ?? true) || original.animation != nil || original.spatialAnimation != nil || original.textAnimation != nil || original.lyricWipe != nil || original.kind == .particles || original.effects?.contains(where: { !$0.keys.isEmpty }) == true
             let earliest = max(timed || animatedImage ? max(0, original.start - original.sourceOffset / original.mediaRate) : 0, animated ? max(0, original.start - original.animationTimeOffset) : 0)
             if animated { result.preserveAnimationDomain() }
             result.start = min(original.end - frame, max(earliest, snapped(original.start + delta)))
