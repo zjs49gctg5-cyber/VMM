@@ -5,16 +5,21 @@ import Combine
 
 final class TimelineMediaCache:ObservableObject {
     @Published private(set) var revision=0
-    private struct Failure {var signature:String;var attempts:Int;var retryAfter:Double}
+    private struct FileSignature:Equatable {
+        var size:UInt64;var modified:TimeInterval;var fileNumber:UInt64;var systemNumber:UInt64
+    }
+    private struct Failure {var signature:FileSignature?;var attempts:Int;var retryAfter:Double}
     private var failed:[String:Failure]=[:]
     static let shared=TimelineMediaCache()
     private let images:NSCache<NSString,NSImage>
+    private let imageLoader:((URL) async -> NSImage?)?
     // NSCache may evict even a just-created entry under memory pressure, before
     // SwiftUI gets a chance to display it. Keep a small bounded handoff buffer.
     private var recentImages:[String:NSImage]=[:]
     private var recentImageKeys:[String]=[]
     private let recentImageLimit=32
     private var pending:Set<String>=[]
+    private var thumbnailWaiters:[String:[ObjectIdentifier:()->Void]]=[:]
     private final class Waveform:NSObject {let values:[Double];init(_ values:[Double]){self.values=values}}
     private let envelopes=NSCache<NSString,Waveform>()
     private var recentEnvelopes:[String:Waveform]=[:]
@@ -28,22 +33,26 @@ final class TimelineMediaCache:ObservableObject {
     private(set) var peakConcurrentRequests=0
     var pendingRequests:Int {pending.count}
     var activeRequests:Int {tasks.count}
-    init(images:NSCache<NSString,NSImage> = NSCache()){self.images=images;envelopes.totalCostLimit=64*1024*1024;envelopes.countLimit=256}
+    init(images:NSCache<NSString,NSImage> = NSCache(),imageLoader:((URL) async -> NSImage?)?=nil){self.images=images;self.imageLoader=imageLoader;envelopes.totalCostLimit=64*1024*1024;envelopes.countLimit=256}
     func clear(){
         generation+=1;images.removeAllObjects();recentImages.removeAll();recentImageKeys.removeAll();envelopes.removeAllObjects();recentEnvelopes.removeAll();recentEnvelopeKeys.removeAll();recentEnvelopeBytes=0;jobs=[]
-        tasks.values.forEach{$0.cancel()};pending.removeAll();failed.removeAll();revision+=1
+        tasks.values.forEach{$0.cancel()};pending.removeAll();thumbnailWaiters.removeAll();failed.removeAll();revision+=1
     }
     private func enqueue(_ key:String,source:URL?=nil,onReady:@escaping()->Void,work:@escaping()async->Value) {
         pending.insert(key);jobs.append(Job(key:key,generation:generation,source:source,work:work,onReady:onReady));startJobs()
     }
-    private func signature(_ url:URL?)->String {
-        guard let url,let attributes=try? FileManager.default.attributesOfItem(atPath:url.path) else{return "missing"}
-        return "\(attributes[.size] ?? 0):\(attributes[.modificationDate] ?? Date.distantPast)"
+    private static func signature(_ url:URL?)->FileSignature? {
+        guard let url,let attributes=try? FileManager.default.attributesOfItem(atPath:url.path) else{return nil}
+        return FileSignature(size:(attributes[.size] as? NSNumber)?.uint64Value ?? 0,
+                             modified:(attributes[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0,
+                             fileNumber:(attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0,
+                             systemNumber:(attributes[.systemNumber] as? NSNumber)?.uint64Value ?? 0)
     }
     private func startJobs() {
         while tasks.count<2,!jobs.isEmpty {
             let job=jobs.removeFirst(),id=UUID()
             tasks[id]=Task.detached(priority:.utility){[weak self] in
+                let attemptedSignature=Self.signature(job.source)
                 let value=await job.work()
                 guard let cache=self else{return}
                 await MainActor.run {
@@ -52,7 +61,10 @@ final class TimelineMediaCache:ObservableObject {
                         cache.pending.remove(job.key)
                         switch value {
                         case .image(let image):
-                            if let image {
+                            let currentSignature=Self.signature(job.source)
+                            if currentSignature != attemptedSignature {
+                                cache.failed[job.key]=nil
+                            } else if let image {
                                 cache.failed[job.key]=nil
                                 cache.images.setObject(image,forKey:job.key as NSString,cost:max(1,Int(image.size.width*image.size.height)*4))
                                 cache.remember(image,forKey:job.key)
@@ -60,7 +72,7 @@ final class TimelineMediaCache:ObservableObject {
                             else {
                                 let attempts=(cache.failed[job.key]?.attempts ?? 0)+1,delay=Double(attempts*attempts)
                                 if cache.failed.count>=1024 {cache.failed.removeAll()}
-                                cache.failed[job.key]=Failure(signature:cache.signature(job.source),attempts:attempts,retryAfter:ProcessInfo.processInfo.systemUptime+delay)
+                                cache.failed[job.key]=Failure(signature:attemptedSignature,attempts:attempts,retryAfter:ProcessInfo.processInfo.systemUptime+delay)
                                 if attempts<3 {
                                     DispatchQueue.main.asyncAfter(deadline:.now()+delay){[weak cache] in
                                         guard let cache,cache.generation==job.generation,cache.failed[job.key]?.attempts==attempts else{return}
@@ -73,7 +85,8 @@ final class TimelineMediaCache:ObservableObject {
                             cache.envelopes.setObject(waveform,forKey:job.key as NSString,cost:cost)
                             cache.remember(waveform,forKey:job.key,cost:cost)
                         }
-                        cache.revision+=1;job.onReady()
+                        let waiters=cache.thumbnailWaiters.removeValue(forKey:job.key)?.values.map{$0} ?? []
+                        cache.revision+=1;job.onReady();waiters.forEach{$0()}
                     }
                     cache.startJobs()
                 }
@@ -94,7 +107,7 @@ final class TimelineMediaCache:ObservableObject {
             if let removed=recentEnvelopes.removeValue(forKey:recentEnvelopeKeys.removeFirst()) {recentEnvelopeBytes-=removed.values.count*MemoryLayout<Double>.stride}
         }
     }
-    func thumbnail(asset:MediaAsset,directory:URL,time:Double,limitMB:Int,onReady:@escaping()->Void)->NSImage? {
+    func thumbnail(asset:MediaAsset,directory:URL,time:Double,limitMB:Int,subscriber:ObjectIdentifier?=nil,onReady:@escaping()->Void)->NSImage? {
         images.totalCostLimit=max(16,limitMB)*1024*1024
         let original=directory.appendingPathComponent("Media").appendingPathComponent(asset.file)
         let proxy=asset.proxyFile.map{directory.appendingPathComponent("Media").appendingPathComponent($0)}
@@ -102,12 +115,19 @@ final class TimelineMediaCache:ObservableObject {
         let sample=(time*4).rounded()/4,key=url.path+"@\(asset.kind == .image ? 0:sample)"
         if let image=images.object(forKey:key as NSString) ?? recentImages[key] {return image}
         if let failure=failed[key] {
-            if failure.signature != signature(url) {failed[key]=nil}
+            if failure.signature != Self.signature(url) {failed[key]=nil}
             else if failure.attempts>=3 || ProcessInfo.processInfo.systemUptime<failure.retryAfter {return nil}
         }
-        guard !pending.contains(key),pending.count<64 else {return nil}
-        enqueue(key,source:url,onReady:onReady) {
+        if pending.contains(key) {
+            if let subscriber {thumbnailWaiters[key,default:[:]][subscriber]=onReady}
+            return nil
+        }
+        guard pending.count<64 else {return nil}
+        if let subscriber {thumbnailWaiters[key,default:[:]][subscriber]=onReady}
+        let imageLoader=self.imageLoader
+        enqueue(key,source:url,onReady:subscriber == nil ? onReady:{}) {
             guard !Task.isCancelled else{return .image(nil)}
+            if let imageLoader {return .image(await imageLoader(url))}
             let image:NSImage? = autoreleasepool {
                 if let document=asset.psd {
                     return PSDRenderer().image(asset:asset,state:.initial(document),directory:directory,speaking:false,time:0,maximumSize:CGSize(width:128,height:128))

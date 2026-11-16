@@ -3,6 +3,34 @@ import AppKit
 @testable import VMM
 
 final class TimelineThumbnailContinuityTests:XCTestCase {
+    func testThumbnailLayoutPreservesLandscapeAndPortraitProportions() {
+        let cell=CGRect(x:20,y:10,width:120,height:60)
+        let landscape=TimelineThumbnailLayout.imageRect(size:CGSize(width:160,height:90),in:cell)
+        XCTAssertEqual(landscape.width/landscape.height,160.0/90.0,accuracy:0.0001)
+        XCTAssertEqual(landscape.midX,cell.midX,accuracy:0.0001)
+        XCTAssertEqual(TimelineThumbnailLayout.imageRect(size:CGSize(width:90,height:160),in:cell),CGRect(x:63.125,y:10,width:33.75,height:60))
+        XCTAssertEqual(TimelineThumbnailLayout.imageRect(size:.zero,in:cell),.zero)
+    }
+    @MainActor func testTimelineReceivesCompletionForAlreadyPendingThumbnail()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-thumbnail-waiters-\(UUID())")
+        let media=root.appendingPathComponent("Media")
+        try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let context=try XCTUnwrap(RasterTools.bitmap(CGSize(width:64,height:64)))
+        context.setFillColor(NSColor.green.cgColor);context.fill(CGRect(x:0,y:0,width:64,height:64))
+        let rep=NSBitmapImageRep(cgImage:try XCTUnwrap(context.makeImage()))
+        try XCTUnwrap(rep.representation(using:.png,properties:[:])).write(to:media.appendingPathComponent("image.png"))
+        let cache=TimelineMediaCache(),asset=MediaAsset(name:"image",file:"image.png",kind:.image,duration:1)
+        let libraryReady=expectation(description:"first requester"),timelineReady=expectation(description:"pending timeline requester")
+        let subscriber=NSObject();var timelineCalls=0
+        XCTAssertNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{libraryReady.fulfill()}))
+        for _ in 0..<5 {
+            XCTAssertNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,subscriber:ObjectIdentifier(subscriber),onReady:{timelineCalls+=1;timelineReady.fulfill()}))
+        }
+        await fulfillment(of:[libraryReady,timelineReady],timeout:5)
+        XCTAssertEqual(timelineCalls,1,"Redrawing while a request is pending must not register duplicate callbacks")
+        XCTAssertNotNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{}))
+    }
     func testRetentionKeepsOnlyVisibleMatchingSamplesAndHonorsBudget() {
         let retention=TimelineThumbnailRetention(byteLimit:64*64*4)
         let directory=URL(fileURLWithPath:"/tmp/timeline-thumbnail-test")
