@@ -3,7 +3,81 @@ import AVFoundation
 import AppKit
 @testable import VMM
 
+private actor ThumbnailLoadGate {
+    private var released=false
+    private var continuation:CheckedContinuation<Void,Never>?
+    func wait() async {
+        if released {return}
+        await withCheckedContinuation {continuation=$0}
+    }
+    func release() {
+        released=true;continuation?.resume();continuation=nil
+    }
+}
+
 final class LibraryPreviewRegressionTests:XCTestCase {
+    @MainActor func testThumbnailRetriesWhenFileIsReplacedDuringFailedLoad()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-thumbnail-inflight-\(UUID())")
+        let media=root.appendingPathComponent("Media"),url=media.appendingPathComponent("image.png")
+        try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
+        defer{try? FileManager.default.removeItem(at:root)}
+        try Data("invalid".utf8).write(to:url)
+        let started=expectation(description:"first load has read the old file")
+        let failed=expectation(description:"first load has completed")
+        let gate=ThumbnailLoadGate()
+        defer{Task{await gate.release()}}
+        let cache=TimelineMediaCache(imageLoader:{url in
+            let data=try? Data(contentsOf:url)
+            if data == Data("invalid".utf8) {started.fulfill();await gate.wait();return nil}
+            return data.flatMap{NSImage(data:$0)}
+        })
+        let asset=MediaAsset(name:"image",file:"image.png",kind:.image,duration:1)
+        XCTAssertNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{failed.fulfill()}))
+        await fulfillment(of:[started],timeout:5)
+        let context=try XCTUnwrap(RasterTools.bitmap(CGSize(width:64,height:64)))
+        context.setFillColor(NSColor.green.cgColor);context.fill(CGRect(x:0,y:0,width:64,height:64))
+        let png=try XCTUnwrap(NSBitmapImageRep(cgImage:try XCTUnwrap(context.makeImage())).representation(using:.png,properties:[:]))
+        try png.write(to:url)
+        await gate.release()
+        await fulfillment(of:[failed],timeout:5)
+        let recovered=expectation(description:"changed file is retried immediately")
+        var image:NSImage?
+        XCTAssertNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{
+            image=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{})
+            recovered.fulfill()
+        }))
+        XCTAssertEqual(cache.pendingRequests,1,"the previous failure must not be attributed to the replacement")
+        await fulfillment(of:[recovered],timeout:5)
+        XCTAssertNotNil(image)
+    }
+    @MainActor func testThumbnailRetriesWhenSameSizeFileChangesWithinOneSecond()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-thumbnail-subsecond-\(UUID())")
+        let media=root.appendingPathComponent("Media"),url=media.appendingPathComponent("image.png")
+        try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let context=try XCTUnwrap(RasterTools.bitmap(CGSize(width:64,height:64)))
+        context.setFillColor(NSColor.green.cgColor);context.fill(CGRect(x:0,y:0,width:64,height:64))
+        let rep=NSBitmapImageRep(cgImage:try XCTUnwrap(context.makeImage()))
+        let valid=try XCTUnwrap(rep.representation(using:.png,properties:[:]))
+        try Data(repeating:0,count:valid.count).write(to:url)
+        let base=1_700_000_000.0
+        try FileManager.default.setAttributes([.modificationDate:Date(timeIntervalSince1970:base+0.1)],ofItemAtPath:url.path)
+        let cache=TimelineMediaCache(),asset=MediaAsset(name:"image",file:"image.png",kind:.image,duration:1)
+        let failed=expectation(description:"invalid image attempted")
+        XCTAssertNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{failed.fulfill()}))
+        await fulfillment(of:[failed],timeout:5)
+        try valid.write(to:url)
+        try FileManager.default.setAttributes([.modificationDate:Date(timeIntervalSince1970:base+0.6)],ofItemAtPath:url.path)
+        let recovered=expectation(description:"replacement is retried without backoff")
+        var recoveredImage:NSImage?
+        XCTAssertNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{
+            recoveredImage=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{})
+            recovered.fulfill()
+        }))
+        XCTAssertEqual(cache.pendingRequests,1,"same-size replacement must be retried immediately")
+        await fulfillment(of:[recovered],timeout:5)
+        XCTAssertNotNil(recoveredImage)
+    }
     @MainActor func testHoverIsMutedBoundedAndCancelledWhenLeavingOrSwitching()async throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-hover-\(UUID())")
         try FileManager.default.createDirectory(at:root.appendingPathComponent("Media"),withIntermediateDirectories:true)
@@ -48,14 +122,22 @@ final class LibraryPreviewRegressionTests:XCTestCase {
         let rep=NSBitmapImageRep(cgImage:try XCTUnwrap(context.makeImage()))
         try XCTUnwrap(rep.representation(using:.png,properties:[:])).write(to:root.appendingPathComponent("Media/image.png"))
         let recovered=expectation(description:"file restoration retries immediately")
-        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{recovered.fulfill()})
+        var recoveredImage:NSImage?
+        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{
+            recoveredImage=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{})
+            recovered.fulfill()
+        })
         await fulfillment(of:[recovered],timeout:5)
-        XCTAssertNotNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{}))
+        XCTAssertNotNil(recoveredImage)
         cache.clear()
         let reload=expectation(description:"cleared cache regenerates")
-        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{reload.fulfill()})
+        var reloadedImage:NSImage?
+        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{
+            reloadedImage=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{})
+            reload.fulfill()
+        })
         await fulfillment(of:[reload],timeout:5)
-        XCTAssertNotNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{}))
+        XCTAssertNotNil(reloadedImage)
     }
     @MainActor func testLibraryPreferencesPersistAndValidate()throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-library-settings-\(UUID())")
