@@ -8,10 +8,18 @@ final class TimelineMediaCache:ObservableObject {
     private struct Failure {var signature:String;var attempts:Int;var retryAfter:Double}
     private var failed:[String:Failure]=[:]
     static let shared=TimelineMediaCache()
-    private let images=NSCache<NSString,NSImage>()
+    private let images:NSCache<NSString,NSImage>
+    // NSCache may evict even a just-created entry under memory pressure, before
+    // SwiftUI gets a chance to display it. Keep a small bounded handoff buffer.
+    private var recentImages:[String:NSImage]=[:]
+    private var recentImageKeys:[String]=[]
+    private let recentImageLimit=32
     private var pending:Set<String>=[]
     private final class Waveform:NSObject {let values:[Double];init(_ values:[Double]){self.values=values}}
     private let envelopes=NSCache<NSString,Waveform>()
+    private var recentEnvelopes:[String:Waveform]=[:]
+    private var recentEnvelopeKeys:[String]=[]
+    private var recentEnvelopeBytes=0
     private var generation=0
     private struct Job {let key:String;let generation:Int;let source:URL?;let work:()async->Value;let onReady:()->Void}
     private enum Value {case image(NSImage?),waveform([Double])}
@@ -20,9 +28,9 @@ final class TimelineMediaCache:ObservableObject {
     private(set) var peakConcurrentRequests=0
     var pendingRequests:Int {pending.count}
     var activeRequests:Int {tasks.count}
-    init(){envelopes.totalCostLimit=64*1024*1024;envelopes.countLimit=256}
+    init(images:NSCache<NSString,NSImage> = NSCache()){self.images=images;envelopes.totalCostLimit=64*1024*1024;envelopes.countLimit=256}
     func clear(){
-        generation+=1;images.removeAllObjects();envelopes.removeAllObjects();jobs=[]
+        generation+=1;images.removeAllObjects();recentImages.removeAll();recentImageKeys.removeAll();envelopes.removeAllObjects();recentEnvelopes.removeAll();recentEnvelopeKeys.removeAll();recentEnvelopeBytes=0;jobs=[]
         tasks.values.forEach{$0.cancel()};pending.removeAll();failed.removeAll();revision+=1
     }
     private func enqueue(_ key:String,source:URL?=nil,onReady:@escaping()->Void,work:@escaping()async->Value) {
@@ -44,7 +52,11 @@ final class TimelineMediaCache:ObservableObject {
                         cache.pending.remove(job.key)
                         switch value {
                         case .image(let image):
-                            if let image {cache.failed[job.key]=nil;cache.images.setObject(image,forKey:job.key as NSString,cost:max(1,Int(image.size.width*image.size.height)*4))}
+                            if let image {
+                                cache.failed[job.key]=nil
+                                cache.images.setObject(image,forKey:job.key as NSString,cost:max(1,Int(image.size.width*image.size.height)*4))
+                                cache.remember(image,forKey:job.key)
+                            }
                             else {
                                 let attempts=(cache.failed[job.key]?.attempts ?? 0)+1,delay=Double(attempts*attempts)
                                 if cache.failed.count>=1024 {cache.failed.removeAll()}
@@ -56,7 +68,10 @@ final class TimelineMediaCache:ObservableObject {
                                     }
                                 }
                             }
-                        case .waveform(let values):cache.envelopes.setObject(Waveform(values),forKey:job.key as NSString,cost:values.count*MemoryLayout<Double>.stride)
+                        case .waveform(let values):
+                            let waveform=Waveform(values),cost=values.count*MemoryLayout<Double>.stride
+                            cache.envelopes.setObject(waveform,forKey:job.key as NSString,cost:cost)
+                            cache.remember(waveform,forKey:job.key,cost:cost)
                         }
                         cache.revision+=1;job.onReady()
                     }
@@ -66,13 +81,26 @@ final class TimelineMediaCache:ObservableObject {
             peakConcurrentRequests=max(peakConcurrentRequests,tasks.count)
         }
     }
+    private func remember(_ image:NSImage,forKey key:String) {
+        recentImageKeys.removeAll{$0==key};recentImageKeys.append(key);recentImages[key]=image
+        if recentImageKeys.count>recentImageLimit {recentImages.removeValue(forKey:recentImageKeys.removeFirst())}
+    }
+    private func remember(_ waveform:Waveform,forKey key:String,cost:Int) {
+        if let previous=recentEnvelopes.removeValue(forKey:key) {recentEnvelopeBytes-=previous.values.count*MemoryLayout<Double>.stride}
+        recentEnvelopeKeys.removeAll{$0==key}
+        guard cost<=4*1024*1024 else{return}
+        recentEnvelopes[key]=waveform;recentEnvelopeKeys.append(key);recentEnvelopeBytes+=cost
+        while recentEnvelopeKeys.count>16 || recentEnvelopeBytes>4*1024*1024 {
+            if let removed=recentEnvelopes.removeValue(forKey:recentEnvelopeKeys.removeFirst()) {recentEnvelopeBytes-=removed.values.count*MemoryLayout<Double>.stride}
+        }
+    }
     func thumbnail(asset:MediaAsset,directory:URL,time:Double,limitMB:Int,onReady:@escaping()->Void)->NSImage? {
         images.totalCostLimit=max(16,limitMB)*1024*1024
         let original=directory.appendingPathComponent("Media").appendingPathComponent(asset.file)
         let proxy=asset.proxyFile.map{directory.appendingPathComponent("Media").appendingPathComponent($0)}
         let url=proxy.flatMap{FileManager.default.fileExists(atPath:$0.path) ? $0:nil} ?? original
         let sample=(time*4).rounded()/4,key=url.path+"@\(asset.kind == .image ? 0:sample)"
-        if let image=images.object(forKey:key as NSString){return image}
+        if let image=images.object(forKey:key as NSString) ?? recentImages[key] {return image}
         if let failure=failed[key] {
             if failure.signature != signature(url) {failed[key]=nil}
             else if failure.attempts>=3 || ProcessInfo.processInfo.systemUptime<failure.retryAfter {return nil}
@@ -109,7 +137,7 @@ final class TimelineMediaCache:ObservableObject {
     func envelope(asset:MediaAsset,directory:URL,onReady:@escaping()->Void)->[Double]? {
         if let envelope=asset.envelope {return envelope}
         let url=directory.appendingPathComponent("Media").appendingPathComponent(asset.file),key="wave:"+url.path
-        if let values=envelopes.object(forKey:key as NSString){return values.values};guard !pending.contains(key),pending.count<64 else{return nil}
+        if let values=envelopes.object(forKey:key as NSString) ?? recentEnvelopes[key]{return values.values};guard !pending.contains(key),pending.count<64 else{return nil}
         enqueue(key,onReady:onReady) {
             guard !Task.isCancelled else{return .waveform([])}
             var scratch:URL?

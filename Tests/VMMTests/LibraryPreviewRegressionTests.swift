@@ -4,6 +4,57 @@ import AppKit
 @testable import VMM
 
 final class LibraryPreviewRegressionTests:XCTestCase {
+    @MainActor func testThumbnailKeepsCompletedImageDuringCacheReloadButNotForOtherSources()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-thumbnail-continuity-\(UUID())")
+        let media=root.appendingPathComponent("Media"),file=media.appendingPathComponent("image.png")
+        try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let context=try XCTUnwrap(RasterTools.bitmap(CGSize(width:64,height:64)))
+        context.setFillColor(NSColor.green.cgColor);context.fill(CGRect(x:0,y:0,width:64,height:64))
+        let rep=NSBitmapImageRep(cgImage:try XCTUnwrap(context.makeImage()))
+        try XCTUnwrap(rep.representation(using:.png,properties:[:])).write(to:file)
+        let evictable=NSCache<NSString,NSImage>(),cache=TimelineMediaCache(images:evictable),presentation=LibraryThumbnailPresentation()
+        let asset=MediaAsset(name:"image",file:"image.png",kind:.image,duration:1)
+        let ready=expectation(description:"initial image")
+        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{ready.fulfill()})
+        await fulfillment(of:[ready],timeout:5)
+        presentation.refresh(asset:asset,directory:root,limitMB:16,enabled:true,cache:cache)
+        let original=try XCTUnwrap(presentation.image)
+        evictable.removeAllObjects()
+        XCTAssertTrue(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{}) === original,"A freshly generated image must survive immediate NSCache eviction")
+        cache.clear()
+        try FileManager.default.removeItem(at:file)
+        presentation.refresh(asset:asset,directory:root,limitMB:16,enabled:true,cache:cache)
+        XCTAssertTrue(presentation.image === original,"An incomplete reload must not replace the visible thumbnail with a placeholder")
+        var replacement=asset;replacement.file="other.png"
+        presentation.refresh(asset:replacement,directory:root,limitMB:16,enabled:true,cache:cache)
+        XCTAssertNil(presentation.image,"The previous source must not be displayed for a different file")
+        presentation.refresh(asset:asset,directory:root,limitMB:16,enabled:false,cache:cache)
+        XCTAssertNil(presentation.image)
+    }
+    @MainActor func testWaveformRemainsVisibleWhileCacheReloads()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-waveform-continuity-\(UUID())")
+        let media=root.appendingPathComponent("Media"),file=media.appendingPathComponent("tone.wav")
+        try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let format=try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate:44100,channels:1))
+        let buffer=try XCTUnwrap(AVAudioPCMBuffer(pcmFormat:format,frameCapacity:4410));buffer.frameLength=4410
+        let samples=try XCTUnwrap(buffer.floatChannelData?[0])
+        for index in 0..<Int(buffer.frameLength) {samples[index]=Float(sin(Double(index)*0.1)*0.5)}
+        do {let audio=try AVAudioFile(forWriting:file,settings:format.settings);try audio.write(from:buffer)}
+        let cache=TimelineMediaCache(),presentation=LibraryThumbnailPresentation()
+        let asset=MediaAsset(name:"tone",file:"tone.wav",kind:.audio,duration:0.1)
+        let ready=expectation(description:"initial waveform")
+        _=cache.envelope(asset:asset,directory:root,onReady:{ready.fulfill()})
+        await fulfillment(of:[ready],timeout:5)
+        presentation.refresh(asset:asset,directory:root,limitMB:16,enabled:true,cache:cache)
+        let original=try XCTUnwrap(presentation.waveform);XCTAssertFalse(original.isEmpty)
+        cache.clear();try FileManager.default.removeItem(at:file)
+        presentation.refresh(asset:asset,directory:root,limitMB:16,enabled:true,cache:cache)
+        XCTAssertEqual(presentation.waveform,original)
+        presentation.refresh(asset:asset,directory:root,limitMB:16,enabled:false,cache:cache)
+        XCTAssertNil(presentation.waveform)
+    }
     @MainActor func testHoverIsMutedBoundedAndCancelledWhenLeavingOrSwitching()async throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-hover-\(UUID())")
         try FileManager.default.createDirectory(at:root.appendingPathComponent("Media"),withIntermediateDirectories:true)
