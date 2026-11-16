@@ -1,6 +1,35 @@
 import SwiftUI
 import AppKit
 
+/// Retain only recently visible frames while the shared cache regenerates them.
+/// Keys include the source and exact cache sample so a different video frame is
+/// never substituted during zooming, scrolling, or source replacement.
+final class TimelineThumbnailRetention {
+    private struct Key:Hashable {
+        let assetID:UUID;let directory:URL;let file:String;let proxy:String?;let kind:ClipKind;let sample:Double
+        init(asset:MediaAsset,directory:URL,time:Double) {
+            assetID=asset.id;self.directory=directory;file=asset.file;proxy=asset.proxyFile;kind=asset.kind
+            sample=asset.kind == .image ? 0:(time*4).rounded()/4
+        }
+    }
+    private let byteLimit:Int
+    private var previous:[Key:NSImage]=[:]
+    private var current:[Key:NSImage]=[:]
+    private var currentBytes=0
+    init(byteLimit:Int=32*1024*1024){self.byteLimit=max(0,byteLimit)}
+    func beginFrame(){current.removeAll(keepingCapacity:true);currentBytes=0}
+    func image(asset:MediaAsset,directory:URL,time:Double,loaded:NSImage?)->NSImage? {
+        let key=Key(asset:asset,directory:directory,time:time)
+        guard let image=loaded ?? current[key] ?? previous[key] else{return nil}
+        if current[key] == nil {
+            let bytes=max(1,Int(image.size.width*image.size.height)*4)
+            if bytes<=byteLimit-currentBytes {current[key]=image;currentBytes+=bytes}
+        }
+        return image
+    }
+    func endFrame(){previous=current}
+}
+
 /// AppKit owns hit testing and drag coordinates so changing a clip cannot move
 /// the gesture's coordinate system. The project is committed once on mouse-up.
 struct TimelineCanvas: NSViewRepresentable {
@@ -40,6 +69,8 @@ struct TimelineCanvas: NSViewRepresentable {
 
 final class TimelineNSView: NSView {
     weak var store: EditorStore?
+    var mediaCache=TimelineMediaCache.shared
+    private let thumbnailRetention=TimelineThumbnailRetention()
     var hasLayout=false
     var previousZoom:Double=72
     var previousHeader:Double=160
@@ -110,6 +141,8 @@ final class TimelineNSView: NSView {
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let store else { return }
+        thumbnailRetention.beginFrame()
+        defer{thumbnailRetention.endFrame()}
         let selection=store.selection
         let layout=folderLayout
         let assetsByID=Dictionary(store.project.assets.map{($0.id,$0)},uniquingKeysWith:{first,_ in first})
@@ -177,13 +210,14 @@ final class TimelineNSView: NSView {
                     var x=r.minX+floor(max(0,visibleRect.minX-r.minX)/cell)*cell
                     while x<min(r.maxX,visibleRect.maxX) {
                         let sample=mapping.sourceTime(at:c.start+max(0,(x-r.minX)/store.zoom))
-                        if let image=TimelineMediaCache.shared.thumbnail(asset:asset,directory:store.directory,time:sample,limitMB:store.settings.cacheMB,onReady:{[weak self] in self?.needsDisplay=true}) {
+                        let loaded=mediaCache.thumbnail(asset:asset,directory:store.directory,time:sample,limitMB:store.settings.cacheMB,onReady:{[weak self] in self?.needsDisplay=true})
+                        if let image=thumbnailRetention.image(asset:asset,directory:store.directory,time:sample,loaded:loaded) {
                             image.draw(in:NSRect(x:x,y:r.minY,width:cell,height:r.height),from:.zero,operation:.sourceOver,fraction:0.65,respectFlipped:true,hints:nil)
                         }
                         x+=cell
                     }
                 }
-                if store.settings.waveforms && [.audio,.speech,.video].contains(c.kind),let values=TimelineMediaCache.shared.envelope(asset:asset,directory:store.directory,onReady:{[weak self] in self?.needsDisplay=true}),!values.isEmpty,asset.duration>0 {
+                if store.settings.waveforms && [.audio,.speech,.video].contains(c.kind),let values=mediaCache.envelope(asset:asset,directory:store.directory,onReady:{[weak self] in self?.needsDisplay=true}),!values.isEmpty,asset.duration>0 {
                     let wave=NSBezierPath();NSColor.white.withAlphaComponent(0.65).setStroke();wave.lineWidth=1
                     let peak=max(0.001,values.max() ?? 0.001)
                     var x=max(r.minX,visibleRect.minX)
