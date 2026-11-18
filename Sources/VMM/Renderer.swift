@@ -17,6 +17,9 @@ final class FrameRenderer {
     var previewParticleDetail:Double=1
     var previewPlaying=false
     private var temporalSamplingDepth=0
+    // Outgoing composition membership remains fixed at the cut, but a video
+    // with available source handles must continue to advance during the mix.
+    private var transitionVideoOffset:Double=0
     var partialAdjustments=true
     var reuseStaticLayers=true
     var reuseSceneMetadata=true
@@ -89,7 +92,7 @@ final class FrameRenderer {
             let lower=visible.filter{rootTrack($0)>transition.track}
             let sourceTime=max(0,transition.start-1/Double(project.fps))
             let outgoing=project.visibleClips(at:sourceTime).filter{rootTrack($0)>transition.track}
-            if let old=compositionImage(project:project,directory:directory,time:sourceTime,clips:outgoing,size:size,depth:depth),
+            if let old=compositionImage(project:project,directory:directory,time:sourceTime,clips:outgoing,size:size,depth:depth,videoOffset:max(0,time-sourceTime)),
                let new=compositionImage(project:project,directory:directory,time:time,clips:lower,size:size,depth:depth),
                let layer=bitmap(size) {
                 let settings=transition.sceneTransition ?? SceneTransition()
@@ -102,8 +105,10 @@ final class FrameRenderer {
         }
         drawScene(project:project,directory:directory,time:time,clips:visible.filter{$0.kind != .transition},context:context,size:size,transparent:transparent,depth:depth,sceneMembers:members)
     }
-    private func compositionImage(project:Project,directory:URL,time:Double,clips:[Clip],size:CGSize,depth:Int)->CGImage? {
+    private func compositionImage(project:Project,directory:URL,time:Double,clips:[Clip],size:CGSize,depth:Int,videoOffset:Double=0)->CGImage? {
         guard let context=bitmap(size) else{return nil}
+        let previousOffset=transitionVideoOffset;transitionVideoOffset+=videoOffset
+        defer{transitionVideoOffset=previousOffset}
         drawComposition(project:project,directory:directory,time:time,clips:clips,context:context,size:size,transparent:true,depth:depth)
         return context.makeImage()
     }
@@ -485,7 +490,7 @@ final class FrameRenderer {
                     } else if clip.kind == .image {
                         if let sequence=gifs.value(path.path) ?? AnimatedGIF(url:path) {
                             gifs.insert(sequence,key:path.path,bytes:1)
-                            let sample=max(0,original.sourceTime(at:time)-(original.reversed == true ? 1.0/60000 : 0))
+                            let sample=max(0,original.sourceTime(at:time+transitionVideoOffset)-(original.reversed == true ? 1.0/60000 : 0))
                             let index=sequence.frameIndex(at:sample),key="\(path.path)#gif-frame-\(index)"
                             image=images.value(key) ?? sequence.image(at:index)
                             if let image {images.insert(image,key:key,bytes:image.renderCacheBytes)}
@@ -504,7 +509,8 @@ final class FrameRenderer {
                             generators.insert(generator,key:path.path,bytes:1)
                         }
                         if useProxies {generator.maximumSize=renderSize}
-                        let previewTime=useProxies && previewPlaying ? floor(time*Double(project.fps))/Double(project.fps):time
+                        let videoTimelineTime=time+transitionVideoOffset
+                        let previewTime=useProxies && previewPlaying ? floor(videoTimelineTime*Double(project.fps))/Double(project.fps):videoTimelineTime
                         // Source intervals have an exclusive upper bound: in reverse,
                         // sample just before each boundary instead of the next frame.
                         func videoTime(_ timelineTime:Double)->Double {
