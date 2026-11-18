@@ -1,19 +1,42 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
 
 func audioEnvelope(url: URL) throws -> [Double] {
-    let file = try AVAudioFile(forReading: url)
-    let format = file.processingFormat
-    let window = max(1, AVAudioFrameCount(format.sampleRate / 30))
-    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: window) else { return [] }
+    // AVAudioFile.framePosition may raise an Objective-C exception for media
+    // containers whose decoder cannot report its position. Swift's `try` does
+    // not catch that exception. The Core Audio C API reports errors as OSStatus.
+    func check(_ status:OSStatus)throws {
+        guard status == noErr else {throw NSError(domain:NSOSStatusErrorDomain,code:Int(status),userInfo:[NSLocalizedDescriptionKey:"音声波形を読み込めませんでした（\(status)）。"])}
+    }
+    var opened:ExtAudioFileRef?
+    try check(ExtAudioFileOpenURL(url as CFURL,&opened))
+    guard let file=opened else {throw VMMError.message("音声波形を読み込めませんでした。")}
+    defer{ExtAudioFileDispose(file)}
+    var source=AudioStreamBasicDescription(),size=UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+    try check(ExtAudioFileGetProperty(file,kExtAudioFileProperty_FileDataFormat,&size,&source))
+    guard source.mSampleRate.isFinite,(1...768000).contains(source.mSampleRate),(1...32).contains(source.mChannelsPerFrame) else {throw VMMError.message("音声の形式が不正です。")}
+    let channels=source.mChannelsPerFrame,bytesPerFrame=channels*UInt32(MemoryLayout<Float>.size)
+    var format=AudioStreamBasicDescription(mSampleRate:source.mSampleRate,mFormatID:kAudioFormatLinearPCM,
+        mFormatFlags:kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian,
+        mBytesPerPacket:bytesPerFrame,mFramesPerPacket:1,mBytesPerFrame:bytesPerFrame,
+        mChannelsPerFrame:channels,mBitsPerChannel:32,mReserved:0)
+    try check(ExtAudioFileSetProperty(file,kExtAudioFileProperty_ClientDataFormat,UInt32(MemoryLayout<AudioStreamBasicDescription>.size),&format))
+    let window=max(1,UInt32(source.mSampleRate/30))
+    var samples=[Float](repeating:0,count:Int(window)*Int(channels))
     var result: [Double] = []
-    while file.framePosition < file.length {
+    while true {
         try Task.checkCancellation()
-        try file.read(into: buffer, frameCount: window)
-        guard buffer.frameLength > 0, let samples = buffer.floatChannelData else { break }
+        var frames=window
+        let status=samples.withUnsafeMutableBytes { bytes in
+            var list=AudioBufferList(mNumberBuffers:1,mBuffers:AudioBuffer(mNumberChannels:channels,mDataByteSize:UInt32(bytes.count),mData:bytes.baseAddress))
+            return ExtAudioFileRead(file,&frames,&list)
+        }
+        try check(status)
+        guard frames>0 else {break}
         var sum = 0.0
-        for index in 0..<Int(buffer.frameLength) { sum += Double(samples[0][index] * samples[0][index]) }
-        result.append(sqrt(sum / Double(buffer.frameLength)))
+        for index in 0..<Int(frames) {let sample=samples[index*Int(channels)];if sample.isFinite {sum += Double(sample)*Double(sample)}}
+        result.append(sqrt(sum / Double(frames)))
     }
     return result
 }
