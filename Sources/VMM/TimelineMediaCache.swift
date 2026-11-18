@@ -6,7 +6,10 @@ import Combine
 final class TimelineMediaCache:ObservableObject {
     @Published private(set) var revision=0
     private struct FileSignature:Equatable {
-        var size:UInt64;var modified:TimeInterval;var fileNumber:UInt64;var systemNumber:UInt64
+        var size:UInt64
+        var modified:TimeInterval
+        var fileNumber:UInt64
+        var systemNumber:UInt64
     }
     private struct Failure {var signature:FileSignature?;var attempts:Int;var retryAfter:Double}
     private var failed:[String:Failure]=[:]
@@ -70,6 +73,7 @@ final class TimelineMediaCache:ObservableObject {
                                 cache.remember(image,forKey:job.key)
                             }
                             else {
+                                let currentSignature=Self.signature(job.source)
                                 let attempts=(cache.failed[job.key]?.attempts ?? 0)+1,delay=Double(attempts*attempts)
                                 if cache.failed.count>=1024 {cache.failed.removeAll()}
                                 cache.failed[job.key]=Failure(signature:attemptedSignature,attempts:attempts,retryAfter:ProcessInfo.processInfo.systemUptime+delay)

@@ -204,14 +204,22 @@ final class LibraryPreviewRegressionTests:XCTestCase {
         let rep=NSBitmapImageRep(cgImage:try XCTUnwrap(context.makeImage()))
         try XCTUnwrap(rep.representation(using:.png,properties:[:])).write(to:root.appendingPathComponent("Media/image.png"))
         let recovered=expectation(description:"file restoration retries immediately")
-        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{recovered.fulfill()})
+        var recoveredImage:NSImage?
+        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{
+            recoveredImage=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{})
+            recovered.fulfill()
+        })
         await fulfillment(of:[recovered],timeout:5)
-        XCTAssertNotNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{}))
+        XCTAssertNotNil(recoveredImage)
         cache.clear()
         let reload=expectation(description:"cleared cache regenerates")
-        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{reload.fulfill()})
+        var reloadedImage:NSImage?
+        _=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{
+            reloadedImage=cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{})
+            reload.fulfill()
+        })
         await fulfillment(of:[reload],timeout:5)
-        XCTAssertNotNil(cache.thumbnail(asset:asset,directory:root,time:0,limitMB:16,onReady:{}))
+        XCTAssertNotNil(reloadedImage)
     }
     @MainActor func testLibraryPreferencesPersistAndValidate()throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-library-settings-\(UUID())")

@@ -61,7 +61,8 @@ class Client:
             return message["result"]
 
     def tool(self, name, arguments=None):
-        result = self.rpc("tools/call", {"name": name if name.startswith("vmm.") else "vmm." + name, "arguments": arguments or {}})
+        public_name = name if name.startswith(("vmm_", "vmm.")) else "vmm_" + name.replace(".", "_")
+        result = self.rpc("tools/call", {"name": public_name, "arguments": arguments or {}})
         value = result.get("structuredContent")
         if value is None:
             value = json.loads(next(item["text"] for item in result["content"] if item["type"] == "text"))

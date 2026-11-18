@@ -1,4 +1,5 @@
 .build/
+.local-karaoke/
 dist/
 .DS_Store
 .vscode/

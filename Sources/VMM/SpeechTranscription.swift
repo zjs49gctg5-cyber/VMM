@@ -11,12 +11,12 @@ struct TranscriptToken:Equatable {
 
 enum TranscriptPlanner {
     static let maximumAudioSeconds=55.0
-    static func validateSource(_ clip:Clip,project:Project) throws -> MediaAsset {
+    static func validateSource(_ clip:Clip,project:Project,maximumSeconds:Double=maximumAudioSeconds) throws -> MediaAsset {
         guard !clip.hasTimeWarp else {throw VMMError.message("逆再生・可変速度の素材は文字起こしに対応していません。")}
         guard [.audio,.video,.speech].contains(clip.kind),!(clip.kind == .speech && clip.speechDirty),
               let asset=project.asset(for:clip),clip.duration>0,clip.mediaRate>0,
-              clip.duration<=maximumAudioSeconds,clip.duration*clip.mediaRate<=maximumAudioSeconds else {
-            throw VMMError.message("音声または動画を1つ選択してください。文字起こしは使用区間と元素材の両方が55秒以内です。")
+              clip.duration<=maximumSeconds,clip.duration*clip.mediaRate<=maximumSeconds else {
+            throw VMMError.message(maximumSeconds==maximumAudioSeconds ? "音声または動画を1つ選択してください。文字起こしは使用区間と元素材の両方が55秒以内です。":"音声または動画を1つ選択してください。歌詞同期は使用区間と元素材の両方が15分以内です。")
         }
         return asset
     }
@@ -59,12 +59,12 @@ enum TranscriptPlanner {
 
 /// Restricts recognition to an explicitly selected, bounded local audio range.
 enum LocalTranscription {
-    static func audioRange(source:URL,clip:Clip,destination:URL) async throws {
+    static func audioRange(source:URL,clip:Clip,destination:URL,maximumSeconds:Double=TranscriptPlanner.maximumAudioSeconds) async throws {
         let asset=AVURLAsset(url:source)
         guard let track=try await asset.loadTracks(withMediaType:.audio).first else {throw VMMError.message("選択した素材に音声がありません。")}
         let duration=try await asset.load(.duration).seconds
         let amount=min(clip.duration*clip.mediaRate,duration-clip.sourceOffset)
-        guard amount.isFinite,amount>0,amount<=TranscriptPlanner.maximumAudioSeconds else {throw VMMError.message("音声の使用範囲が不正です。")}
+        guard amount.isFinite,amount>0,amount<=maximumSeconds else {throw VMMError.message("音声の使用範囲が不正です。")}
         let composition=AVMutableComposition()
         guard let target=composition.addMutableTrack(withMediaType:.audio,preferredTrackID:kCMPersistentTrackID_Invalid) else{throw VMMError.message("音声を準備できません。")}
         let requested=CMTimeRange(start:CMTime(seconds:clip.sourceOffset,preferredTimescale:48000),duration:CMTime(seconds:amount,preferredTimescale:48000))
@@ -77,7 +77,7 @@ enum LocalTranscription {
         try Task.checkCancellation()
         guard exporter.status == .completed else{throw exporter.error ?? VMMError.message("音声の準備に失敗しました。")}
     }
-    static func recognize(source:URL,clip:Clip,language:String) async throws -> [TranscriptToken] {
+    static func recognize(source:URL,clip:Clip,language:String,hints:[String]=[]) async throws -> [TranscriptToken] {
         let scratch=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-transcription-\(UUID())",isDirectory:true)
         try FileManager.default.createDirectory(at:scratch,withIntermediateDirectories:true);defer{try? FileManager.default.removeItem(at:scratch)}
         let cropped=scratch.appendingPathComponent("source.m4a")
@@ -91,12 +91,13 @@ enum LocalTranscription {
         guard authorization == .authorized else {throw VMMError.message("音声認識が許可されていません。システム設定を確認してください。")}
         guard let recognizer=SFSpeechRecognizer(locale:Locale(identifier:language)),recognizer.isAvailable,recognizer.supportsOnDeviceRecognition else {throw VMMError.message("この言語の端末内音声認識を使用できません。")}
         let request=SFSpeechURLRecognitionRequest(url:cropped);request.requiresOnDeviceRecognition=true;request.shouldReportPartialResults=false
+        request.contextualStrings=Array(hints.filter{!$0.isEmpty && $0.count<=100}.prefix(100))
         return try await LocalRecognitionJob().run(recognizer:recognizer,request:request)
     }
 }
 
 /// Guarantees a single continuation resume even when cancellation races recognition.
-private final class LocalRecognitionJob {
+private final class LocalRecognitionJob: @unchecked Sendable {
     private let lock=NSLock()
     private var continuation:CheckedContinuation<[TranscriptToken],Error>?
     private var task:SFSpeechRecognitionTask?
@@ -107,6 +108,7 @@ private final class LocalRecognitionJob {
                 lock.lock()
                 if cancelled {lock.unlock();continuation.resume(throwing:CancellationError());return}
                 self.continuation=continuation;lock.unlock()
+                DispatchQueue.global().asyncAfter(deadline:.now()+90) { [weak self] in self?.timeOut() }
                 let task=recognizer.recognitionTask(with:request){[weak self] result,error in
                     if let result,result.isFinal {
                         self?.finish(.success(result.bestTranscription.segments.map{TranscriptToken(text:$0.substring,start:$0.timestamp,duration:$0.duration)}))
@@ -118,6 +120,12 @@ private final class LocalRecognitionJob {
     }
     private func finish(_ result:Result<[TranscriptToken],Error>) {
         lock.lock();let c=continuation;continuation=nil;task=nil;lock.unlock();c?.resume(with:result)
+    }
+    private func timeOut() {
+        lock.lock();let current=task,active=continuation != nil;lock.unlock()
+        guard active else{return}
+        finish(.failure(VMMError.message("音声認識が時間内に完了しませんでした。音声区間やmacOSの音声認識設定を確認してください。")))
+        current?.cancel()
     }
     private func cancel() {
         lock.lock();cancelled=true;let current=task;let c=continuation;continuation=nil;task=nil;lock.unlock()

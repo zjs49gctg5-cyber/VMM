@@ -15,7 +15,9 @@ struct ControlResult {
 final class EditorCommands {
     weak var store:EditorStore?
     var jobs:[String:[String:Any]]=[:]
-    static var commands:[String] {["clip.add","clip.update","clip.delete","clip.duplicate","clip.split","select","seek","play","pause","undo","redo","voice.connect","speech.generate","speech.generateBatch","speech.cancel","speech.retryFailed","rhythm.update","rhythm.repeat","rhythm.slice","rhythm.quantize","rhythm.fit","rhythm.pattern"]+workflowCommands}
+    var lyricRecognizer:(URL,Clip,String,[String]) async throws->[TranscriptToken] = {url,clip,language,hints in try await LocalTranscription.recognize(source:url,clip:clip,language:language,hints:hints)}
+    var lyricSeparatedRecognizer:(URL,Clip,String,String,Int,String,String) async throws->[LyricAlignmentMatch] = {url,clip,text,language,fps,python,models in try await LocalVocalSeparation.align(source:url,clip:clip,text:text,language:language,fps:fps,python:python,models:models,recognizer:{url,clip,language,hints in try await LocalTranscription.recognize(source:url,clip:clip,language:language,hints:hints)})}
+    static var commands:[String] {["karaoke.align","karaoke.separate","karaoke.importParts","karaoke.import","clip.add","clip.update","clip.delete","clip.duplicate","clip.split","select","seek","play","pause","undo","redo","voice.connect","speech.generate","speech.generateBatch","speech.cancel","speech.retryFailed","rhythm.update","rhythm.repeat","rhythm.slice","rhythm.quantize","rhythm.fit","rhythm.pattern"]+workflowCommands}
     func read(_ name:String,jobID:String?=nil)->ControlResult {
         guard let store else{return .error("VMMに接続していません。",503)}
         if let result=readWorkflow(name:name,jobID:jobID,store:store){return result}
@@ -43,6 +45,47 @@ final class EditorCommands {
                 return c
             }
             switch command {
+            case "karaoke.align":
+                guard let raw=request["clipID"] as? String,let id=UUID(uuidString:raw),let source=store.project.clips.first(where:{$0.id==id}),let text=request["text"] as? String,!text.isEmpty,text.utf8.count<=16384 else{return .error("有効なclipIDと歌詞を指定してください。")}
+                let language=request["language"] as? String ?? "ja-JP"
+                guard ["ja-JP","en-US"].contains(language) else{return .error("認識言語が不正です。")}
+                let method=request["method"] as? String ?? "speech"
+                guard ["speech","separated"].contains(method) else{return .error("同期方法が不正です。")}
+                let python=UserDefaults.standard.string(forKey:LocalVocalSeparation.pythonKey) ?? "",models=UserDefaults.standard.string(forKey:LocalVocalSeparation.modelsKey) ?? ""
+                let snapshot=store.project,directory=store.directory,asset=try TranscriptPlanner.validateSource(source,project:snapshot,maximumSeconds:LyricAlignment.maximumSeconds)
+                let url=directory.appendingPathComponent("Media").appendingPathComponent(asset.file)
+                guard FileManager.default.fileExists(atPath:url.path) else{return .error("音声素材が見つかりません。")}
+                return enqueue {
+                    let matches:[LyricAlignmentMatch]
+                    if method=="separated" {matches=try await self.lyricSeparatedRecognizer(url,source,text,language,snapshot.fps,python,models)}
+                    else {matches=try await LyricAlignment.recognize(text:text,source:url,clip:source,language:language,fps:snapshot.fps,using:self.lyricRecognizer)}
+                    guard store.project==snapshot,store.directory==directory else{throw VMMError.message("解析中にプロジェクトが変更されました。")}
+                    return ["matches":matches.map{["index":$0.index,"text":$0.text,"start":$0.start as Any? ?? NSNull(),"end":$0.end as Any? ?? NSNull(),"matched":$0.matched] as [String:Any]},"method":method,"sourceClipID":id.uuidString,"warning":"歌声の同期候補は誤る場合があります。時刻を確認して修正してください。"]
+                }
+            case "karaoke.separate":
+                let source=try clip(),snapshot=store.project,directory=store.directory,asset=try TranscriptPlanner.validateSource(source,project:snapshot,maximumSeconds:LyricAlignment.maximumSeconds)
+                let url=directory.appendingPathComponent("Media").appendingPathComponent(asset.file),python=UserDefaults.standard.string(forKey:LocalVocalSeparation.pythonKey) ?? "",models=UserDefaults.standard.string(forKey:LocalVocalSeparation.modelsKey) ?? ""
+                guard FileManager.default.fileExists(atPath:url.path) else{return .error("音声素材が見つかりません。")}
+                return enqueue {
+                    let ids=try await LocalVocalSeparation.withVocals(source:url,clip:source,python:python,models:models) {vocals,_ in
+                        guard store.project==snapshot,store.directory==directory else{throw VMMError.message("処理中にプロジェクトが変更されました。")}
+                        return try await store.importURLs([vocals])
+                    }
+                    return ["assetIDs":ids.map(\.uuidString)]
+                }
+            case "karaoke.importParts":
+                guard let items=request["parts"] as? [[String:Any]],items.allSatisfy({Set($0.keys).isSubset(of:["text","track","beforeColor","afterColor","topY","bottomY"])}) else{return .error("パートの指定が不正です。")}
+                let parts=try JSONDecoder().decode([KaraokePartSpec].self,from:JSONSerialization.data(withJSONObject:items))
+                let (project,clips)=try KaraokePartsPlanner.make(parts,project:store.project)
+                store.pause();store.checkpoint();store.project=project;store.selectedIDs=Set(clips.map(\.id));store.selectedID=clips.first?.id
+                return .json(["ok":true,"clipIDs":clips.map{$0.id.uuidString}])
+            case "karaoke.import":
+                guard let text=request["text"] as? String,let track=request["track"] as? Int,store.project.tracks.indices.contains(track),!store.project.tracks[track].locked else{return .error("歌詞またはレイヤーが不正です。")}
+                let lines=try LyricLRC.parse(text,fps:store.project.fps)
+                let trackID=store.project.tracks[track].id
+                let (project,clips)=try store.lyricCandidate(lines:lines,trackID:trackID,fps:store.project.fps,motion:.none,karaoke:true,beforeColor:request["beforeColor"] as? String ?? "FFFFFF",afterColor:request["afterColor"] as? String ?? "FFDD33")
+                store.pause();store.checkpoint();store.project=project;store.selectedIDs=Set(clips.map(\.id));store.selectedID=clips.first?.id
+                return .json(["ok":true,"clipIDs":clips.map{$0.id.uuidString}])
             case "clip.add":
                 guard let raw=request["kind"] as? String,let kind=ClipKind(rawValue:raw) else {return .error("有効なkindを指定してください。")}
                 let rawTrack=request["track"] as? Int ?? store.selectedTrack
@@ -116,7 +159,7 @@ final class EditorCommands {
         guard let raw else {return clip}
         guard let patch=raw as? [String:Any] else {throw VMMError.message("propertiesはJSONオブジェクトで指定してください。")}
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(clip)) as! [String:Any]
-        let allowed:Set<String>=["pan","audioDisabled","normalizationGain","measuredLUFS","reading","precompositionID","spatialAnimation","temporalMotion","audioReactive","tracking","anchorPoint","textAnimation","textRevealRate","characterPresetID","ducking","name","text","track","start","duration","sourceOffset","assetID","x","y","scale","opacity","rotation","flipX","flipY","color","fontSize","volume","speakerID","speakerName","speechConfiguration","characterSpeechEngine","speed","textStyle","shapeStyle","animation","animationOffset","effects","sceneTransition","audioFade","parentID","transform","masks","blendMode","particles","playbackRate","preservePitch","pitchSemitones","equalizer","adjustmentOwnLayer","adjustmentRegion","mouthAssetID","characterSpeakerID","psd"]
+        let allowed:Set<String>=["lyricRuby","lyricWipe","pan","audioDisabled","normalizationGain","measuredLUFS","reading","precompositionID","spatialAnimation","temporalMotion","audioReactive","tracking","anchorPoint","textAnimation","textRevealRate","characterPresetID","ducking","name","text","track","start","duration","sourceOffset","assetID","x","y","scale","opacity","rotation","flipX","flipY","color","fontSize","volume","speakerID","speakerName","speechConfiguration","characterSpeechEngine","speed","textStyle","shapeStyle","animation","animationOffset","effects","sceneTransition","audioFade","parentID","transform","masks","blendMode","particles","playbackRate","preservePitch","pitchSemitones","equalizer","adjustmentOwnLayer","adjustmentRegion","mouthAssetID","characterSpeakerID","psd"]
         guard Set(patch.keys).isSubset(of:allowed) else {throw VMMError.message("変更できないプロパティがあります。")}
         for (key,value) in patch {object[key]=value}
         var result=try JSONDecoder().decode(Clip.self,from:JSONSerialization.data(withJSONObject:object))

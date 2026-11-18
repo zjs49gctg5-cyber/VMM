@@ -7,6 +7,94 @@ import Darwin
 @testable import VMM
 
 final class MCPTests:XCTestCase {
+    @MainActor func testKaraokeAlignmentJobReturnsCandidatesWithoutEditing()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-mcp-align-\(UUID())"),store=EditorStore(preferencesDirectory:root),commands=EditorCommands()
+        commands.store=store;store.autoSpeech=false;store.project=Project()
+        defer{try? FileManager.default.removeItem(at:root);try? FileManager.default.removeItem(at:store.directory)}
+        let asset=MediaAsset(name:"voice",file:"voice.wav",kind:.audio,duration:5)
+        try FileManager.default.createDirectory(at:store.directory.appendingPathComponent("Media"),withIntermediateDirectories:true)
+        try Data([0]).write(to:store.directory.appendingPathComponent("Media/voice.wav"))
+        var clip=Clip(kind:.audio,name:"voice",track:0,start:0,duration:5);clip.assetID=asset.id;store.project.assets=[asset];store.project.clips=[clip]
+        commands.lyricRecognizer={_,_,_,_ in [TranscriptToken(text:"あい",start:1,duration:1)]}
+        let before=store.project,session=MCPSession();try initialize(session,commands)
+        let response=try send(session,commands,"tools/call",["name":"vmm_karaoke_align","arguments":["clipID":clip.id.uuidString,"text":"あい\n未一致"]])
+        let result=try XCTUnwrap((response?["result"] as? [String:Any])?["structuredContent"] as? [String:Any]),id=try XCTUnwrap(result["jobID"] as? String)
+        for _ in 0..<100 where commands.jobs[id]?["state"] as? String == "running" {try await Task.sleep(nanoseconds:10_000_000)}
+        let job=try XCTUnwrap(commands.jobs[id]);XCTAssertEqual(job["state"] as? String,"completed")
+        let payload=try XCTUnwrap(job["result"] as? [String:Any]),matches=try XCTUnwrap(payload["matches"] as? [[String:Any]])
+        XCTAssertEqual(matches.map{$0["matched"] as? Bool},[true,false]);XCTAssertEqual(store.project,before)
+    }
+    @MainActor func testSeparatedKaraokeAlignmentJobViaMCP()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-mcp-forced-\(UUID())"),store=EditorStore(preferencesDirectory:root),commands=EditorCommands()
+        commands.store=store;store.autoSpeech=false;store.project=Project()
+        defer{try? FileManager.default.removeItem(at:root);try? FileManager.default.removeItem(at:store.directory)}
+        let asset=MediaAsset(name:"voice",file:"voice.wav",kind:.audio,duration:5)
+        try FileManager.default.createDirectory(at:store.directory.appendingPathComponent("Media"),withIntermediateDirectories:true)
+        try Data([0]).write(to:store.directory.appendingPathComponent("Media/voice.wav"))
+        var clip=Clip(kind:.audio,name:"voice",track:0,start:0,duration:5);clip.assetID=asset.id;store.project.assets=[asset];store.project.clips=[clip]
+        commands.lyricSeparatedRecognizer={_,_,_,_,_,_,_ in [LyricAlignmentMatch(index:0,text:"あい",start:1,end:2)]}
+        let before=store.project,session=MCPSession();try initialize(session,commands)
+        let response=try send(session,commands,"tools/call",["name":"vmm_karaoke_align","arguments":["clipID":clip.id.uuidString,"text":"あい","method":"separated"]])
+        let result=try XCTUnwrap((response?["result"] as? [String:Any])?["structuredContent"] as? [String:Any]),id=try XCTUnwrap(result["jobID"] as? String)
+        for _ in 0..<100 where commands.jobs[id]?["state"] as? String == "running" {try await Task.sleep(nanoseconds:10_000_000)}
+        let job=try XCTUnwrap(commands.jobs[id]);XCTAssertEqual(job["state"] as? String,"completed");XCTAssertEqual(store.project,before)
+        let payload=try XCTUnwrap(job["result"] as? [String:Any]);XCTAssertEqual(payload["method"] as? String,"separated")
+        let matches=try XCTUnwrap(payload["matches"] as? [[String:Any]]);XCTAssertEqual(matches.first?["matched"] as? Bool,true)
+    }
+    @MainActor func testSimultaneousKaraokePartsViaMCP()throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-mcp-parts-\(UUID())"),store=EditorStore(preferencesDirectory:root),commands=EditorCommands()
+        commands.store=store;store.autoSpeech=false;store.project=Project()
+        defer{try? FileManager.default.removeItem(at:root);try? FileManager.default.removeItem(at:store.directory)}
+        let session=MCPSession();try initialize(session,commands)
+        let parts:[[String:Any]]=[["text":"[00:01]あ\n[00:03]","track":0,"topY":0.2],["text":"[00:01]い\n[00:03]","track":1,"topY":0.7]]
+        let response=try send(session,commands,"tools/call",["name":"vmm_karaoke_importParts","arguments":["parts":parts]])
+        XCTAssertEqual((response?["result"] as? [String:Any])?["isError"] as? Bool,false)
+        XCTAssertEqual(store.project.clips.count,2);XCTAssertEqual(store.project.clips.map(\.y),[0.2,0.7])
+        _=try send(session,commands,"tools/call",["name":"vmm_undo"]);XCTAssertTrue(store.project.clips.isEmpty)
+        let rich=try send(session,commands,"tools/call",["name":"vmm_karaoke_import","arguments":["text":"@Ruby1=為替,か[00:00:50]わせ\n[00:01:00]為替[00:03:00]","track":0]])
+        XCTAssertEqual((rich?["result"] as? [String:Any])?["isError"] as? Bool,false)
+        XCTAssertEqual(store.project.clips.first?.lyricWipe?.segments?.count,1)
+        XCTAssertEqual(store.project.clips.first?.lyricRuby?.first?.timings?.first?.offset,0.5)
+    }
+    @MainActor func testKaraokeLRCImportViaMCP()throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-mcp-lrc-\(UUID())"),store=EditorStore(preferencesDirectory:root),commands=EditorCommands()
+        commands.store=store;store.autoSpeech=false;store.project=Project()
+        defer{try? FileManager.default.removeItem(at:root);try? FileManager.default.removeItem(at:store.directory)}
+        let session=MCPSession();try initialize(session,commands)
+        let invalid=try send(session,commands,"tools/call",["name":"vmm_karaoke_import","arguments":["text":"[offset:3]","track":0]])
+        XCTAssertEqual((invalid?["result"] as? [String:Any])?["isError"] as? Bool,true);XCTAssertTrue(store.project.clips.isEmpty)
+        let response=try send(session,commands,"tools/call",["name":"vmm_karaoke_import","arguments":["text":"[00:01.00]あ\n[00:03.00]い\n[00:05.00]","track":0,"beforeColor":"123456","afterColor":"ABCDEF"]])
+        XCTAssertEqual((response?["result"] as? [String:Any])?["isError"] as? Bool,false)
+        XCTAssertEqual(store.project.clips.count,2);XCTAssertTrue(store.project.clips.allSatisfy{$0.lyricWipe != nil})
+        XCTAssertTrue(store.project.clips.allSatisfy{$0.color=="123456" && $0.lyricWipe?.color=="ABCDEF"})
+        _=try send(session,commands,"tools/call",["name":"vmm_undo"]);XCTAssertTrue(store.project.clips.isEmpty)
+    }
+    @MainActor func testLyricWipeViaMCPIsValidatedAndUndoable()throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("vmm-mcp-lyric-\(UUID())"),store=EditorStore(preferencesDirectory:root),commands=EditorCommands()
+        commands.store=store;store.autoSpeech=false;store.project=Project()
+        defer{try? FileManager.default.removeItem(at:root);try? FileManager.default.removeItem(at:store.directory)}
+        let session=MCPSession();try initialize(session,commands)
+        let arguments:[String:Any]=["kind":"text","properties":["text":"歌詞","duration":3,"lyricWipe":["start":0.5,"end":2.5,"color":"FFDD33"]]]
+        let result=try send(session,commands,"tools/call",["name":"vmm_clip_add","arguments":arguments])
+        XCTAssertEqual((result?["result"] as? [String:Any])?["isError"] as? Bool,false)
+        let id=try XCTUnwrap(store.project.clips.first?.id)
+        XCTAssertEqual(store.project.clips.first?.lyricWipe,LyricWipe(start:0.5,end:2.5,color:"FFDD33"))
+        let segment:[String:Any]=["id":UUID().uuidString,"startIndex":0,"endIndex":2,"start":0.5,"end":2.5]
+        let segmented=try send(session,commands,"tools/call",["name":"vmm_clip_update","arguments":["clipID":id.uuidString,"properties":["lyricWipe":["start":0.5,"end":2.5,"color":"FFDD33","segments":[segment]]]]])
+        XCTAssertEqual((segmented?["result"] as? [String:Any])?["isError"] as? Bool,false)
+        XCTAssertEqual(store.project.clips.first?.lyricWipe?.segments?.count,1)
+        let ruby:[String:Any]=["id":UUID().uuidString,"startIndex":0,"endIndex":2,"text":"かし"]
+        let withRuby=try send(session,commands,"tools/call",["name":"vmm_clip_update","arguments":["clipID":id.uuidString,"properties":["lyricRuby":[ruby]]]])
+        XCTAssertEqual((withRuby?["result"] as? [String:Any])?["isError"] as? Bool,false)
+        XCTAssertEqual(store.project.clips.first?.lyricRuby?.first?.text,"かし")
+        let invalid=try send(session,commands,"tools/call",["name":"vmm_clip_update","arguments":["clipID":id.uuidString,"properties":["lyricWipe":["start":2,"end":1,"color":"FFDD33"]]]])
+        XCTAssertEqual((invalid?["result"] as? [String:Any])?["isError"] as? Bool,true)
+        XCTAssertEqual(store.project.clips.first?.lyricWipe?.start,0.5)
+        _=try send(session,commands,"tools/call",["name":"vmm_clip_update","arguments":["clipID":id.uuidString,"properties":["lyricWipe":NSNull()]]])
+        XCTAssertNil(store.project.clips.first?.lyricWipe)
+        _=try send(session,commands,"tools/call",["name":"vmm_undo"])
+        XCTAssertNotNil(store.project.clips.first?.lyricWipe)
+    }
     @MainActor func send(_ session:MCPSession,_ commands:EditorCommands,_ method:String,_ params:[String:Any]=[:],id:Int?=1)throws->[String:Any]? {
         var request:[String:Any]=["jsonrpc":"2.0","method":method,"params":params]
         if let id{request["id"]=id}
@@ -81,6 +169,35 @@ final class MCPTests:XCTestCase {
         }.value
         XCTAssertEqual((try JSONSerialization.jsonObject(with:data) as? [String:Any])?["ok"] as? Bool,true)
         XCTAssertEqual(store.project.clips.first?.text,"MCPからのセリフ")
+        let arguments=root.appendingPathComponent("karaoke.json")
+        let taggedLyrics="@Ruby1=漢字,か[00:00:50]んじ\n[00:01:00]漢字[00:03:00]"
+        try JSONSerialization.data(withJSONObject:["text":taggedLyrics,"track":0]).write(to:arguments)
+        let karaoke=try await Task.detached{()throws->Data in
+            let process=Process();process.executableURL=URL(fileURLWithPath:"/usr/bin/python3")
+            process.arguments=[script.path,"--helper",helper.path,"--connection",connection,"call","vmm_karaoke_import",arguments.path]
+            let out=Pipe(),err=Pipe();process.standardOutput=out;process.standardError=err
+            try process.run();let result=out.fileHandleForReading.readDataToEndOfFile();process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus,0,String(data:err.fileHandleForReading.readDataToEndOfFile(),encoding:.utf8) ?? "")
+            return result
+        }.value
+        XCTAssertEqual((try JSONSerialization.jsonObject(with:karaoke) as? [String:Any])?["ok"] as? Bool,true)
+        XCTAssertEqual(store.project.clips.last?.lyricWipe?.color,"FFDD33")
+        XCTAssertEqual(store.project.clips.last?.lyricWipe?.segments?.count,1)
+        XCTAssertEqual(store.project.clips.last?.lyricRuby?.first?.timings?.first?.offset,0.5)
+        let parts:[[String:Any]]=[["text":"[00:01:00]A[00:02:00]B[00:03:00]","track":0],["text":"[00:01:00]別パート[00:03:00]","track":1]]
+        try JSONSerialization.data(withJSONObject:["parts":parts]).write(to:arguments)
+        let multipart=try await Task.detached{()throws->Data in
+            let process=Process();process.executableURL=URL(fileURLWithPath:"/usr/bin/python3")
+            process.arguments=[script.path,"--helper",helper.path,"--connection",connection,"call","vmm_karaoke_importParts",arguments.path]
+            let out=Pipe(),err=Pipe();process.standardOutput=out;process.standardError=err
+            try process.run();let result=out.fileHandleForReading.readDataToEndOfFile();process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus,0,String(data:err.fileHandleForReading.readDataToEndOfFile(),encoding:.utf8) ?? "")
+            return result
+        }.value
+        XCTAssertEqual((try JSONSerialization.jsonObject(with:multipart) as? [String:Any])?["ok"] as? Bool,true)
+        let importedParts=Array(store.project.clips.suffix(2))
+        XCTAssertEqual(importedParts.map(\.track),[0,1])
+        XCTAssertEqual(try XCTUnwrap(importedParts.first).lyricWipe?.segments?.count,2)
         let activeFD=try await Task.detached{()throws->Int32 in
             let fd=try LocalSocket.connect(socket),lines=SocketLines(fd)
             try lines.write(JSONSerialization.data(withJSONObject:["token":descriptor.token]))

@@ -55,7 +55,12 @@ struct SharedCatalog:Codable,Equatable {
     var pronunciations:[PronunciationEntry]=[]
 }
 enum VMMPaths {
-    static var support:URL {FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/VMM")}
+    static var support:URL {
+        #if DEBUG
+        if let path=ProcessInfo.processInfo.environment["VMM_UI_TEST_SUPPORT"],path.hasPrefix("/") {return URL(fileURLWithPath:path,isDirectory:true)}
+        #endif
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/VMM")
+    }
     static var recovery:URL {support.appendingPathComponent("Recovery")}
     static var library:URL {support.appendingPathComponent("SharedLibrary")}
     static func read<T:Decodable>(_ type:T.Type,_ file:String,fallback:T)->T {(try? JSONDecoder().decode(type,from:Data(contentsOf:support.appendingPathComponent(file)))) ?? fallback}
