@@ -285,6 +285,7 @@ struct InspectorView: View {
                         }.vmmFont(size:12, weight: .semibold)
                         if tab == 0 {
                         TextField(L("名前"), text: store.binding(\.name, default: "")).textFieldStyle(.roundedBorder)
+                        if clip.kind == .transition {SceneTransitionControls(store:store,clip:clip)}
                         if clip.kind == .text || clip.kind == .speech {
                             VStack(alignment: .leading, spacing: 6) {
                                 caption(L("セリフ / テキスト"))

@@ -170,9 +170,11 @@ struct MediaLibraryBrowser:View {
             hover.enter(asset,directory:store.directory,seconds:store.settings.libraryHoverSeconds ?? 3)
         } else {hover.exit(asset.id)}
     }
-    @ViewBuilder private func thumbnail(_ asset:MediaAsset)->some View {
-        if hover.assetID==asset.id,let player=hover.player {LibraryVideoView(player:player).background(Color.black).cornerRadius(4)}
-        else {MediaLibraryThumbnail(asset:asset,directory:store.directory,limitMB:store.settings.cacheMB,enabled:store.settings.libraryThumbnails ?? true).background(Color.black.opacity(0.25)).cornerRadius(4)}
+    private func thumbnail(_ asset:MediaAsset)->some View {
+        ZStack {
+            MediaLibraryThumbnail(asset:asset,directory:store.directory,limitMB:store.settings.cacheMB,enabled:store.settings.libraryThumbnails ?? true)
+            if hover.assetID==asset.id,let player=hover.player {LibraryVideoView(player:player)}
+        }.background(Color.black.opacity(0.25)).cornerRadius(4)
     }
     private func details(_ a:MediaAsset)->some View {VStack(alignment:.leading,spacing:3){Text(a.name).vmmFont(size:12).lineLimit(2);if !(a.tags ?? []).isEmpty{Text(a.tags!.joined(separator:" · ")).vmmFont(size:12).foregroundColor(.secondary).lineLimit(1)};Text(a.psd.map{"PSD · \($0.layers.count)レイヤー"} ?? (a.kind == .image ? "画像":String(format:"%@ · %.1f秒",LibraryQuery.kindTitle(a),a.duration))).vmmFont().foregroundColor(.secondary)}.frame(maxWidth:.infinity,alignment:.leading)}
     @ViewBuilder private func playButton(_ asset:MediaAsset)->some View {
@@ -182,18 +184,57 @@ struct MediaLibraryBrowser:View {
     }
     private func addButton(_ a:MediaAsset)->some View {Button{store.add(a.kind,asset:a)} label:{UIIcon(systemName:"plus.circle")}.buttonStyle(.borderless).help(L("選択中のレイヤー・再生位置に追加")).accessibilityLabel("\(a.name)をタイムラインに追加")}
 }
+/// Keep the last completed preview while an evicted or cleared cache entry reloads.
+/// A change of source must discard it so another asset is never shown by mistake.
+@MainActor final class LibraryThumbnailPresentation:ObservableObject {
+    private struct Source:Equatable {
+        let id:UUID;let directory:URL;let file:String;let proxy:String?;let kind:ClipKind
+        let sample:Double;let psd:PSDDocument?;let envelope:[Double]?
+    }
+    @Published private(set) var image:NSImage?
+    @Published private(set) var waveform:[Double]?
+    private var source:Source?
+
+    private func source(for asset:MediaAsset,directory:URL)->Source {
+        Source(id:asset.id,directory:directory,file:asset.file,proxy:asset.proxyFile,kind:asset.kind,sample:asset.kind == .video ? min(1,asset.duration/2):0,psd:asset.psd,envelope:asset.envelope)
+    }
+    func isCurrent(asset:MediaAsset,directory:URL)->Bool {source == source(for:asset,directory:directory)}
+    func reset(){source=nil;image=nil;waveform=nil}
+    func refresh(asset:MediaAsset,directory:URL,limitMB:Int,enabled:Bool,cache:TimelineMediaCache) {
+        let sample=asset.kind == .video ? min(1,asset.duration/2):0
+        let next=source(for:asset,directory:directory)
+        if source != next {source=next;image=nil;waveform=nil}
+        guard enabled else {image=nil;waveform=nil;return}
+        if [.image,.video].contains(asset.kind),let loaded=cache.thumbnail(asset:asset,directory:directory,time:sample,limitMB:limitMB,onReady:{}) {
+            if image !== loaded {image=loaded}
+        } else if asset.kind == .audio,let loaded=cache.envelope(asset:asset,directory:directory,onReady:{}),!loaded.isEmpty,loaded != waveform {
+            waveform=loaded
+        }
+    }
+}
+
 struct MediaLibraryThumbnail:View {
     let asset:MediaAsset;let directory:URL;let limitMB:Int;let enabled:Bool
     @ObservedObject private var cache=TimelineMediaCache.shared
+    @StateObject private var presentation=LibraryThumbnailPresentation()
     var body:some View {GeometryReader{geometry in
-        if enabled && [.image,.video].contains(asset.kind),let image=cache.thumbnail(asset:asset,directory:directory,time:asset.kind == .video ? min(1,asset.duration/2):0,limitMB:limitMB,onReady:{}) {
+        if enabled && presentation.isCurrent(asset:asset,directory:directory) && [.image,.video].contains(asset.kind),let image=presentation.image {
             Image(nsImage:image).resizable().scaledToFit().frame(width:geometry.size.width,height:geometry.size.height)
-        } else if enabled && asset.kind == .audio,let values=cache.envelope(asset:asset,directory:directory,onReady:{}),!values.isEmpty {
+        } else if enabled && presentation.isCurrent(asset:asset,directory:directory) && asset.kind == .audio,let values=presentation.waveform,!values.isEmpty {
             LibraryWaveform(values:values).stroke(asset.kind.tint,lineWidth:1).padding(6)
         } else {
             UIIcon(systemName:asset.psd == nil ? asset.kind.symbol:"person.crop.rectangle",size:22).vmmFont(size:22).foregroundColor(asset.kind.tint).frame(width:geometry.size.width,height:geometry.size.height)
         }
-    }.accessibilityHidden(true)}
+    }.accessibilityHidden(true)
+        .onAppear{refresh()}
+        .onDisappear{presentation.reset()}
+        .onChange(of:cache.revision){_ in refresh()}
+        .onChange(of:asset){_ in refresh()}
+        .onChange(of:directory){_ in refresh()}
+        .onChange(of:limitMB){_ in refresh()}
+        .onChange(of:enabled){_ in refresh()}
+    }
+    private func refresh(){presentation.refresh(asset:asset,directory:directory,limitMB:limitMB,enabled:enabled,cache:cache)}
 }
 struct LibraryWaveform:Shape {
     let values:[Double]

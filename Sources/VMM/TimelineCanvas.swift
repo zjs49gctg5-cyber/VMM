@@ -1,6 +1,44 @@
 import SwiftUI
 import AppKit
 
+enum TimelineThumbnailLayout {
+    static func imageRect(size:CGSize,in cell:CGRect)->CGRect {
+        guard size.width>0,size.height>0,cell.width>0,cell.height>0 else{return .zero}
+        let scale=min(cell.width/size.width,cell.height/size.height)
+        let width=size.width*scale,height=size.height*scale
+        return CGRect(x:cell.midX-width/2,y:cell.midY-height/2,width:width,height:height)
+    }
+}
+
+/// Retain only recently visible frames while the shared cache regenerates them.
+/// Keys include the source and exact cache sample so a different video frame is
+/// never substituted during zooming, scrolling, or source replacement.
+final class TimelineThumbnailRetention {
+    private struct Key:Hashable {
+        let assetID:UUID;let directory:URL;let file:String;let proxy:String?;let kind:ClipKind;let sample:Double
+        init(asset:MediaAsset,directory:URL,time:Double) {
+            assetID=asset.id;self.directory=directory;file=asset.file;proxy=asset.proxyFile;kind=asset.kind
+            sample=asset.kind == .image ? 0:(time*4).rounded()/4
+        }
+    }
+    private let byteLimit:Int
+    private var previous:[Key:NSImage]=[:]
+    private var current:[Key:NSImage]=[:]
+    private var currentBytes=0
+    init(byteLimit:Int=32*1024*1024){self.byteLimit=max(0,byteLimit)}
+    func beginFrame(){current.removeAll(keepingCapacity:true);currentBytes=0}
+    func image(asset:MediaAsset,directory:URL,time:Double,loaded:NSImage?)->NSImage? {
+        let key=Key(asset:asset,directory:directory,time:time)
+        guard let image=loaded ?? current[key] ?? previous[key] else{return nil}
+        if current[key] == nil {
+            let bytes=max(1,Int(image.size.width*image.size.height)*4)
+            if bytes<=byteLimit-currentBytes {current[key]=image;currentBytes+=bytes}
+        }
+        return image
+    }
+    func endFrame(){previous=current}
+}
+
 /// AppKit owns hit testing and drag coordinates so changing a clip cannot move
 /// the gesture's coordinate system. The project is committed once on mouse-up.
 struct TimelineCanvas: NSViewRepresentable {
@@ -40,6 +78,8 @@ struct TimelineCanvas: NSViewRepresentable {
 
 final class TimelineNSView: NSView {
     weak var store: EditorStore?
+    var mediaCache=TimelineMediaCache.shared
+    private let thumbnailRetention=TimelineThumbnailRetention()
     var hasLayout=false
     var previousZoom:Double=72
     var previousHeader:Double=160
@@ -110,6 +150,8 @@ final class TimelineNSView: NSView {
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let store else { return }
+        thumbnailRetention.beginFrame()
+        defer{thumbnailRetention.endFrame()}
         let selection=store.selection
         let layout=folderLayout
         let assetsByID=Dictionary(store.project.assets.map{($0.id,$0)},uniquingKeysWith:{first,_ in first})
@@ -164,26 +206,27 @@ final class TimelineNSView: NSView {
             let r = rect(c,layout:layout)
             guard r.intersects(visibleRect) else { continue }
             let tint = NSColor(c.kind.tint)
+            let title=(c.sceneMembers != nil ? "▣ ":(c.parentID != nil ? "↳ ":"")) + (c.linkID != nil ? "↔ ":"") + (c.speechDirty ? "◌ " : "") + c.timelineTitle
             let clipColor=dark ? tint:(tint.blended(withFraction:0.5,of:.black) ?? tint)
             clipColor.withAlphaComponent(dark ? (selection.contains(c.id) ? 0.75:0.4):(selection.contains(c.id) ? 0.95:0.85)).setFill()
             let path = NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4); path.fill()
-            (selection.contains(c.id) ? NSColor.white : tint).setStroke(); path.lineWidth = 1; path.stroke()
             if let asset=c.assetID.flatMap({assetsByID[$0]}) {
                 let mapping=c.sourceTimeMapping
                 NSGraphicsContext.saveGraphicsState();path.addClip()
                 if store.settings.thumbnails && [.image,.video].contains(asset.kind) {
-                    let interval=[0.5,1.0,2,5,10,30,60,120,300,600].first{$0*store.zoom>=64} ?? 600
-                    let cell=asset.kind == .image ? 64:interval*store.zoom
+                    let cell=max(64,r.height*16/9)
                     var x=r.minX+floor(max(0,visibleRect.minX-r.minX)/cell)*cell
                     while x<min(r.maxX,visibleRect.maxX) {
                         let sample=mapping.sourceTime(at:c.start+max(0,(x-r.minX)/store.zoom))
-                        if let image=TimelineMediaCache.shared.thumbnail(asset:asset,directory:store.directory,time:sample,limitMB:store.settings.cacheMB,onReady:{[weak self] in self?.needsDisplay=true}) {
-                            image.draw(in:NSRect(x:x,y:r.minY,width:cell,height:r.height),from:.zero,operation:.sourceOver,fraction:0.65,respectFlipped:true,hints:nil)
+                        let loaded=mediaCache.thumbnail(asset:asset,directory:store.directory,time:sample,limitMB:store.settings.cacheMB,subscriber:ObjectIdentifier(self),onReady:{[weak self] in self?.needsDisplay=true})
+                        if let image=thumbnailRetention.image(asset:asset,directory:store.directory,time:sample,loaded:loaded) {
+                            let target=TimelineThumbnailLayout.imageRect(size:image.size,in:NSRect(x:x,y:r.minY,width:cell,height:r.height))
+                            image.draw(in:target,from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
                         }
                         x+=cell
                     }
                 }
-                if store.settings.waveforms && [.audio,.speech,.video].contains(c.kind),let values=TimelineMediaCache.shared.envelope(asset:asset,directory:store.directory,onReady:{[weak self] in self?.needsDisplay=true}),!values.isEmpty,asset.duration>0 {
+                if store.settings.waveforms && [.audio,.speech,.video].contains(c.kind),let values=mediaCache.envelope(asset:asset,directory:store.directory,onReady:{[weak self] in self?.needsDisplay=true}),!values.isEmpty,asset.duration>0 {
                     let wave=NSBezierPath();NSColor.white.withAlphaComponent(0.65).setStroke();wave.lineWidth=1
                     let peak=max(0.001,values.max() ?? 0.001)
                     var x=max(r.minX,visibleRect.minX)
@@ -195,11 +238,14 @@ final class TimelineNSView: NSView {
                     }
                     wave.stroke()
                 }
-                NSColor.black.withAlphaComponent(0.42).setFill();NSRect(x:r.minX,y:r.minY+7*uiScale,width:r.width,height:20*uiScale).fill()
+                let font=NSFont.systemFont(ofSize:store.settings.textPoints)
+                let labelWidth=min(r.width,(title as NSString).size(withAttributes:[.font:font]).width+24)
+                NSColor.black.withAlphaComponent(0.65).setFill();NSRect(x:r.minX,y:r.midY-10*uiScale,width:labelWidth,height:20*uiScale).fill()
                 NSGraphicsContext.restoreGraphicsState()
             }
+            (selection.contains(c.id) ? NSColor.white : tint).setStroke(); path.lineWidth = 1; path.stroke()
             let showTransitionDetail=c.kind == .transition && r.height>=36*uiScale
-            text((c.sceneMembers != nil ? "▣ ":(c.parentID != nil ? "↳ ":"")) + (c.linkID != nil ? "↔ ":"") + (c.speechDirty ? "◌ " : "") + c.timelineTitle, NSRect(x: r.minX + 12, y:showTransitionDetail ? r.minY+2*uiScale:r.midY-9*uiScale,width:max(0,r.width-24),height:20*uiScale), color: .white)
+            text(title, NSRect(x: r.minX + 12, y:showTransitionDetail ? r.minY+2*uiScale:r.midY-9*uiScale,width:max(0,r.width-24),height:20*uiScale), color: .white)
             if showTransitionDetail {
                 text(c.sceneTransition?.kind.title ?? "クロスフェード", NSRect(x: r.minX + 12, y:r.minY+19*uiScale,width:max(0,r.width-24),height:18*uiScale), color: .white, size: 8)
             }

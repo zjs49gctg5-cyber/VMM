@@ -8,6 +8,9 @@ enum VMMLocalization {
         return english[value] ?? DiagnosticLocalization.translate(value) ?? value
     }
     static let english:[String:String]=[
+"時刻付きLRC/KRAを読み込むか、再生しながら手動でタイミングを記録できます。文字タイミング・ルビにも対応します。":"Import timed LRC/KRA or record timing manually during playback. Character timing and ruby are also supported.",
+"参考：音声から同期候補を作成":"Reference: suggest timing from audio",
+"自動同期は参考用です。歌声では大きくずれる場合があります。再生して全行を確認し、手動で修正してください。":"Automatic alignment is only a reference and can be significantly inaccurate for singing. Listen, check every line, and adjust manually.",
 "同期方法":"Alignment method",
 "音声認識":"Speech recognition",
 "歌声分離して音声認識":"Separate vocals & recognize speech",

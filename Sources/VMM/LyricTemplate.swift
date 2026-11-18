@@ -252,7 +252,7 @@ struct LyricTemplateSheet:View {
                 Text(L("歌詞（1行ずつ）"));TextEditor(text:$source).frame(minHeight:100,idealHeight:140).border(Color.gray)
                 Button(L("複数パートを編集…")){showParts=true}.sheet(isPresented:$showParts){KaraokePartsSheet(store:store)}
                 HStack{Button(L("LRCを読み込む…")){importLRC()};Button(L("LRCを書き出す…")){exportLRC()}.disabled(lines.isEmpty)}
-                Text(L("LRC/KRAの文字タイミング・ルビを読み込みます。配置時はカラオケ字幕を有効にしてください。" )).foregroundColor(.secondary)
+                Text(L("時刻付きLRC/KRAを読み込むか、再生しながら手動でタイミングを記録できます。文字タイミング・ルビにも対応します。" )).foregroundColor(.secondary)
                 NumberInput(title:"開始",value:$start,range:0...86400,unit:"秒")
                 Toggle(L("BPMの拍で間隔を指定"),isOn:$useBeats)
                 if useBeats {NumberInput(title:"1行の拍数",value:$beats,range:0.125...64);Text(String(format:"BPM %.1f",(store.project.rhythm ?? RhythmSettings()).bpm)).foregroundColor(.secondary)}
@@ -277,10 +277,11 @@ struct LyricTemplateSheet:View {
                 }
                 HStack {
                     Picker(L("同期方法"),selection:$alignmentMethod){Text(L("音声認識")).tag("speech");Text(L("歌声分離して音声認識")).tag("separated")}.labelsHidden().disabled(alignTask != nil)
-                    Button(L("選択音声から同期候補を作成")){alignFromAudio()}.disabled(lines.isEmpty || alignTask != nil)
+                    Button(L("参考：音声から同期候補を作成")){alignFromAudio()}.disabled(lines.isEmpty || alignTask != nil)
                     if alignTask != nil {ProgressView().controlSize(.small);Button(L("中止")){alignTask?.cancel()}}
                     if !alignment.isEmpty {Button(L("候補を反映")){applyAlignment()};Text("\(alignment.filter(\.matched).count)/\(alignment.count) \(L("行の候補"))")}
                 }
+                Text(L("自動同期は参考用です。歌声では大きくずれる場合があります。再生して全行を確認し、手動で修正してください。")).foregroundColor(.secondary)
                 if alignmentMethod=="separated" {
                     HStack {Button(L("Pythonを選択…")){selectAlignmentPath(directory:false)};Text(alignmentPython.isEmpty ? L("未設定"):URL(fileURLWithPath:alignmentPython).lastPathComponent).lineLimit(1);Button(L("モデルフォルダを選択…")){selectAlignmentPath(directory:true)};Text(alignmentModels.isEmpty ? L("未設定"):URL(fileURLWithPath:alignmentModels).lastPathComponent).lineLimit(1)}.disabled(alignTask != nil)
                     Button(L("歌声を分離して素材に追加")){separateOnly()}.disabled(alignTask != nil)
